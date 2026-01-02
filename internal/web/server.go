@@ -80,6 +80,15 @@ func (s *Server) setupRoutes() {
 	eventsHandler := handlers.NewEventsHandler(s.config.TownRoot)
 	api.HandleFunc("/events", eventsHandler.List).Methods("GET")
 
+	// Mail handlers
+	mailHandler := handlers.NewMailHandler(s.config.TownRoot)
+	api.HandleFunc("/mail", mailHandler.ListInbox).Methods("GET")
+	api.HandleFunc("/mail/count", mailHandler.GetCount).Methods("GET")
+	api.HandleFunc("/mail/search", mailHandler.Search).Methods("POST")
+	api.HandleFunc("/mail/{id}", mailHandler.GetMessage).Methods("GET")
+	api.HandleFunc("/mail/{id}/read", mailHandler.MarkRead).Methods("POST")
+	api.HandleFunc("/mail/agent/{address:.*}", mailHandler.ListAgentInbox).Methods("GET")
+
 	// WebSocket handler
 	api.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		ws.ServeWS(s.hub, w, r)
