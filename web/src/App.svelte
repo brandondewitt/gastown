@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import './app.css';
+  import { getWebSocketClient, MessageTypes, type WSMessage, type AgentUpdate, destroyWebSocketClient } from './lib/websocket';
 
   // Types
   interface Agent {
@@ -55,6 +56,8 @@
   let status: TownStatus | null = null;
   let loading = true;
   let error: string | null = null;
+  let wsConnected = false;
+  let lastUpdate: Date | null = null;
 
   async function fetchStatus() {
     try {
@@ -63,6 +66,7 @@
       if (data.success) {
         status = data.data;
         error = null;
+        lastUpdate = new Date();
       } else {
         error = data.error?.message || 'Unknown error';
       }
@@ -73,11 +77,82 @@
     }
   }
 
-  onMount(() => {
+  function handleAgentUpdate(message: WSMessage) {
+    if (!status) return;
+
+    const update = message.payload as AgentUpdate;
+    lastUpdate = new Date();
+
+    // Update agent in global agents list
+    const globalIdx = status.agents?.findIndex(a => a.address === update.address);
+    if (globalIdx !== undefined && globalIdx >= 0) {
+      status.agents[globalIdx] = {
+        ...status.agents[globalIdx],
+        running: update.running,
+        has_work: update.has_work,
+        hook_bead: update.hook_bead,
+        work_title: update.work_title,
+        state: update.state,
+      };
+      status = status; // Trigger reactivity
+      return;
+    }
+
+    // Update agent in rig agents
+    for (const rig of status.rigs ?? []) {
+      const rigIdx = rig.agents?.findIndex(a => a.address === update.address);
+      if (rigIdx !== undefined && rigIdx >= 0 && rig.agents) {
+        rig.agents[rigIdx] = {
+          ...rig.agents[rigIdx],
+          running: update.running,
+          has_work: update.has_work,
+          hook_bead: update.hook_bead,
+          work_title: update.work_title,
+          state: update.state,
+        };
+        status = status; // Trigger reactivity
+        return;
+      }
+    }
+
+    // Agent not found - might be new, refresh full status
+    console.log('[WS] Agent not found, refreshing:', update.address);
     fetchStatus();
-    // Refresh every 5 seconds
-    const interval = setInterval(fetchStatus, 5000);
-    return () => clearInterval(interval);
+  }
+
+  onMount(() => {
+    // Initial fetch
+    fetchStatus();
+
+    // Setup WebSocket for real-time updates
+    const ws = getWebSocketClient();
+
+    ws.on('_connected', () => {
+      wsConnected = true;
+      console.log('[App] WebSocket connected');
+    });
+
+    ws.on('_disconnected', () => {
+      wsConnected = false;
+      console.log('[App] WebSocket disconnected');
+    });
+
+    ws.on(MessageTypes.AGENT_UPDATE, handleAgentUpdate);
+
+    // Connect
+    ws.connect();
+
+    // Fallback polling every 30s in case WS is disconnected
+    const interval = setInterval(() => {
+      if (!wsConnected) {
+        fetchStatus();
+      }
+    }, 30000);
+
+    return () => {
+      clearInterval(interval);
+      destroyWebSocketClient();
+    };
   });
 
   function getRoleIcon(role: string): string {
@@ -122,6 +197,10 @@
             {/if}
           </span>
         {/if}
+        <span class="ws-status" class:connected={wsConnected} title={wsConnected ? 'Live updates active' : 'Reconnecting...'}>
+          <span class="ws-dot"></span>
+          {wsConnected ? 'Live' : 'Offline'}
+        </span>
       </div>
     {/if}
   </header>
@@ -276,6 +355,38 @@
     align-items: center;
     gap: var(--space-2);
     color: var(--color-text-muted);
+  }
+
+  .ws-status {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    font-size: 0.75rem;
+    color: var(--color-text-muted);
+    padding: var(--space-1) var(--space-2);
+    border-radius: var(--radius-sm);
+    background-color: var(--color-surface-raised);
+  }
+
+  .ws-status.connected {
+    color: var(--color-success, #22c55e);
+  }
+
+  .ws-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background-color: var(--color-text-muted);
+  }
+
+  .ws-status.connected .ws-dot {
+    background-color: var(--color-success, #22c55e);
+    animation: pulse 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
   }
 
   .mail-badge {

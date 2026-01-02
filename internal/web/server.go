@@ -31,10 +31,11 @@ type Config struct {
 
 // Server represents the web dashboard HTTP server.
 type Server struct {
-	config     Config
-	router     *mux.Router
-	httpServer *http.Server
-	hub        *ws.Hub
+	config      Config
+	router      *mux.Router
+	httpServer  *http.Server
+	hub         *ws.Hub
+	broadcaster *Broadcaster
 }
 
 // NewServer creates a new web dashboard server.
@@ -204,8 +205,8 @@ func (s *Server) StartWithGracefulShutdown() error {
 
 // startEventBroadcaster watches for events and broadcasts them to WebSocket clients.
 func (s *Server) startEventBroadcaster() {
-	// TODO: Implement event file tailing and broadcasting
-	// This will be implemented in Phase 2: Real-time Events
+	s.broadcaster = NewBroadcaster(s.config.TownRoot, s.hub)
+	s.broadcaster.Start()
 }
 
 // Addr returns the server address.
