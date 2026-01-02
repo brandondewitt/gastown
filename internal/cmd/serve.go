@@ -2,8 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os/exec"
-	"runtime"
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/web"
@@ -78,20 +76,3 @@ func runServe(cmd *cobra.Command, args []string) error {
 	return server.StartWithGracefulShutdown()
 }
 
-// openBrowser opens the default browser to the given URL.
-func openBrowser(url string) {
-	var cmd *exec.Cmd
-
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.Command("open", url)
-	case "linux":
-		cmd = exec.Command("xdg-open", url)
-	case "windows":
-		cmd = exec.Command("cmd", "/c", "start", url)
-	default:
-		return
-	}
-
-	cmd.Start()
-}
