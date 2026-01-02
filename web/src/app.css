@@ -45,9 +45,9 @@
   --transition-normal: 250ms ease;
 }
 
-/* Light theme */
+/* Light theme - via media query (fallback) */
 @media (prefers-color-scheme: light) {
-  :root {
+  :root:not([data-theme]) {
     --color-bg: #f8fafc;
     --color-surface: #ffffff;
     --color-surface-raised: #f1f5f9;
@@ -55,6 +55,26 @@
     --color-text: #0f172a;
     --color-text-muted: #64748b;
   }
+}
+
+/* Light theme - manual override */
+:root[data-theme="light"] {
+  --color-bg: #f8fafc;
+  --color-surface: #ffffff;
+  --color-surface-raised: #f1f5f9;
+  --color-border: #e2e8f0;
+  --color-text: #0f172a;
+  --color-text-muted: #64748b;
+}
+
+/* Dark theme - manual override */
+:root[data-theme="dark"] {
+  --color-bg: #0f172a;
+  --color-surface: #1e293b;
+  --color-surface-raised: #334155;
+  --color-border: #334155;
+  --color-text: #f1f5f9;
+  --color-text-muted: #94a3b8;
 }
 
 /* Reset and base styles */
