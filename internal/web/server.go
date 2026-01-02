@@ -68,6 +68,7 @@ func (s *Server) setupRoutes() {
 	// Agents handlers
 	agentsHandler := handlers.NewAgentsHandler(s.config.TownRoot)
 	api.HandleFunc("/agents", agentsHandler.List).Methods("GET")
+	api.HandleFunc("/agents/{address:.*}/details", agentsHandler.GetDetails).Methods("GET")
 	api.HandleFunc("/agents/{address:.*}", agentsHandler.Get).Methods("GET")
 
 	// Convoys handlers
