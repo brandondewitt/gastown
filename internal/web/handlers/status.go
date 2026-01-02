@@ -265,7 +265,7 @@ func (h *StatusHandler) discoverGlobalAgents(
 	mailRouter *mail.Router,
 	fastMode bool,
 ) []AgentRuntime {
-	var agents []AgentRuntime
+	agents := []AgentRuntime{}
 
 	// Check for Mayor
 	mayorSession := "gt-mayor"
