@@ -159,7 +159,7 @@
       </section>
 
       <!-- Global Agents -->
-      {#if status.agents.length > 0}
+      {#if status.agents?.length > 0}
         <section class="card">
           <h2 class="card-header">Global Agents</h2>
           <div class="agent-list">
@@ -183,7 +183,7 @@
       <section class="rigs-section">
         <h2 class="section-header">Rigs</h2>
         <div class="rigs-grid">
-          {#each status.rigs as rig}
+          {#each status.rigs ?? [] as rig}
             <div class="card rig-card">
               <div class="rig-header">
                 <h3 class="rig-name">{rig.name}</h3>
