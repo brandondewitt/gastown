@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/web"
@@ -49,6 +50,10 @@ func init() {
 }
 
 func runServe(cmd *cobra.Command, args []string) error {
+	// Disable bd daemon for server operations - the town root may not be a git repo,
+	// and daemon auto-start causes 5+ second timeouts on API requests
+	os.Setenv("BD_NO_DAEMON", "1")
+
 	// Find town root
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
