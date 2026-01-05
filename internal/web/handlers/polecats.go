@@ -2,9 +2,14 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 
 	"github.com/gorilla/mux"
+	"github.com/steveyegge/gastown/internal/git"
+	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/web/api"
 )
 
@@ -26,14 +31,19 @@ type PolecatData struct {
 
 // AddPolecatResponse represents the response to an add polecat request.
 type AddPolecatResponse struct {
-	Success bool         `json:"success"`
-	Data    PolecatData  `json:"data"`
+	Success bool        `json:"success"`
+	Data    PolecatData `json:"data"`
 }
 
-// RemovePolecatResponse represents the response to a remove polecat request.
-type RemovePolecatResponse struct {
+// RemovalResponse represents the result of a polecat removal operation.
+type RemovalResponse struct {
 	Success bool   `json:"success"`
-	Message string `json:"message,omitempty"`
+	Rig     string `json:"rig"`
+	Polecat string `json:"polecat"`
+	Message string `json:"message"`
+	Removed bool   `json:"removed"`
+	Path    string `json:"path,omitempty"`
+	Error   string `json:"error,omitempty"`
 }
 
 // NewPolecatsHandler creates a new polecats handler.
@@ -67,13 +77,13 @@ func (h *PolecatsHandler) AddPolecat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	vars := mux.Vars(r)
-	rig := vars["rig"]
+	rigName := vars["rig"]
 
 	// TODO: Implement actual polecat creation logic
 	// For now, return a mock response with the address format "rig/polecats/name"
 	data := PolecatData{
 		Name:    req.Name,
-		Address: rig + "/polecats/" + req.Name,
+		Address: rigName + "/polecats/" + req.Name,
 	}
 
 	response := AddPolecatResponse{
@@ -84,23 +94,95 @@ func (h *PolecatsHandler) AddPolecat(w http.ResponseWriter, r *http.Request) {
 	api.WriteJSON(w, response)
 }
 
-// RemovePolecat handles DELETE requests to remove a polecat.
+// RemovePolecat handles DELETE requests to remove a specific polecat.
+// Endpoint: DELETE /api/v1/rigs/{rig}/polecats/{name}
 func (h *PolecatsHandler) RemovePolecat(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	rig := vars["rig"]
-	name := vars["name"]
+	rigName := vars["rig"]
+	polecatName := vars["name"]
 
-	if name == "" {
+	// Validate parameters
+	if rigName == "" {
+		api.BadRequest(w, "rig name is required")
+		return
+	}
+	if polecatName == "" {
 		api.BadRequest(w, "polecat name is required")
 		return
 	}
 
-	// TODO: Implement actual polecat removal logic
+	// Build the path to the polecat directory
+	polecatPath := filepath.Join(h.townRoot, rigName, "polecats", polecatName)
 
-	response := RemovePolecatResponse{
-		Success: true,
-		Message: "polecat " + rig + "/polecats/" + name + " removed",
+	// Check if polecat exists
+	info, err := os.Stat(polecatPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			api.NotFound(w, fmt.Sprintf("polecat not found: %s/%s", rigName, polecatName))
+			return
+		}
+		api.InternalError(w, fmt.Sprintf("failed to stat polecat: %v", err))
+		return
 	}
 
-	api.WriteJSON(w, response)
+	// Ensure it's a directory
+	if !info.IsDir() {
+		api.BadRequest(w, fmt.Sprintf("polecat path is not a directory: %s", polecatPath))
+		return
+	}
+
+	// Attempt to remove the polecat directory
+	if err := os.RemoveAll(polecatPath); err != nil {
+		api.InternalError(w, fmt.Sprintf("failed to remove polecat: %v", err))
+		return
+	}
+
+	// Return success response
+	resp := RemovalResponse{
+		Success: true,
+		Rig:     rigName,
+		Polecat: polecatName,
+		Message: fmt.Sprintf("Polecat %s removed successfully from rig %s", polecatName, rigName),
+		Removed: true,
+		Path:    polecatPath,
+	}
+	api.WriteJSON(w, resp)
+}
+
+// ListPolecats handles GET requests to list all polecats in a rig.
+// Endpoint: GET /api/v1/rigs/{rig}/polecats
+func (h *PolecatsHandler) ListPolecats(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	rigName := vars["rig"]
+
+	if rigName == "" {
+		api.BadRequest(w, "rig name is required")
+		return
+	}
+
+	// Create a rig manager to discover polecats
+	g := git.NewGit(h.townRoot)
+	mgr := rig.NewManager(h.townRoot, nil, g)
+
+	// Discover the specific rig
+	rigs, err := mgr.DiscoverRigs()
+	if err != nil {
+		api.InternalError(w, fmt.Sprintf("failed to discover rigs: %v", err))
+		return
+	}
+
+	// Find the requested rig
+	for _, r := range rigs {
+		if r.Name == rigName {
+			resp := map[string]interface{}{
+				"rig":      rigName,
+				"polecats": r.Polecats,
+				"count":    len(r.Polecats),
+			}
+			api.WriteJSON(w, resp)
+			return
+		}
+	}
+
+	api.NotFound(w, fmt.Sprintf("rig not found: %s", rigName))
 }
