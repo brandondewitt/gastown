@@ -64,6 +64,11 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/rigs/{name}", rigsHandler.Get).Methods("GET")
 	api.HandleFunc("/rigs/{name}/agents", rigsHandler.GetAgents).Methods("GET")
 
+	// Polecats handlers
+	polecatsHandler := handlers.NewPolecatsHandler(s.config.TownRoot)
+	api.HandleFunc("/rigs/{rig}/polecats", polecatsHandler.HandlePolecats).Methods("POST", "DELETE")
+	api.HandleFunc("/rigs/{rig}/polecats/{name}", polecatsHandler.HandlePolecats).Methods("DELETE")
+
 	// Agents handlers
 	agentsHandler := handlers.NewAgentsHandler(s.config.TownRoot)
 	api.HandleFunc("/agents", agentsHandler.List).Methods("GET")
