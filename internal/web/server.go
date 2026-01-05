@@ -72,6 +72,7 @@ func (s *Server) setupRoutes() {
 	// Convoys handlers
 	convoysHandler := handlers.NewConvoysHandler(s.config.TownRoot)
 	api.HandleFunc("/convoys", convoysHandler.List).Methods("GET")
+	api.HandleFunc("/convoys", convoysHandler.Create).Methods("POST")
 	api.HandleFunc("/convoys/{id}", convoysHandler.Get).Methods("GET")
 
 	// Events handlers
