@@ -91,6 +91,7 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/mail/count", mailHandler.GetCount).Methods("GET")
 	api.HandleFunc("/mail/search", mailHandler.Search).Methods("POST")
 	api.HandleFunc("/mail/{id}", mailHandler.GetMessage).Methods("GET")
+	api.HandleFunc("/mail/{id}", mailHandler.DeleteMessage).Methods("DELETE")
 	api.HandleFunc("/mail/{id}/read", mailHandler.MarkRead).Methods("POST")
 	api.HandleFunc("/mail/agent/{address:.*}", mailHandler.ListAgentInbox).Methods("GET")
 
@@ -154,7 +155,7 @@ func (s *Server) staticHandler() http.Handler {
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 
 		if r.Method == "OPTIONS" {

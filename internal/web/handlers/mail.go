@@ -282,6 +282,31 @@ func (h *MailHandler) HandleSendMail(w http.ResponseWriter, r *http.Request) {
 	api.WriteJSON(w, SendMailData{ID: mailID})
 }
 
+// DeleteMessage deletes a message by ID.
+func (h *MailHandler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id := vars["id"]
+
+	if id == "" {
+		api.WriteError(w, http.StatusBadRequest, "INVALID_ID", "Message ID is required")
+		return
+	}
+
+	beadsDir := filepath.Join(h.townRoot, ".beads")
+	mailbox := mail.NewMailboxWithBeadsDir("mayor/", h.townRoot, beadsDir)
+
+	if err := mailbox.Delete(id); err != nil {
+		if err == mail.ErrMessageNotFound {
+			api.WriteError(w, http.StatusNotFound, "NOT_FOUND", "Message not found")
+			return
+		}
+		api.WriteError(w, http.StatusInternalServerError, "MAIL_ERROR", "Failed to delete message: "+err.Error())
+		return
+	}
+
+	api.WriteJSON(w, map[string]string{"status": "deleted"})
+}
+
 // generateMailID generates a unique mail ID based on random bytes.
 func generateMailID() string {
 	// Generate 4 random bytes for uniqueness
