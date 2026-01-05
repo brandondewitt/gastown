@@ -84,10 +84,10 @@ func (s *Server) setupRoutes() {
 	eventsHandler := handlers.NewEventsHandler(s.config.TownRoot)
 	api.HandleFunc("/events", eventsHandler.List).Methods("GET")
 
-<<<<<<< HEAD
 	// Mail handlers
 	mailHandler := handlers.NewMailHandler(s.config.TownRoot)
 	api.HandleFunc("/mail", mailHandler.ListInbox).Methods("GET")
+	api.HandleFunc("/mail", mailHandler.HandleSendMail).Methods("POST")
 	api.HandleFunc("/mail/count", mailHandler.GetCount).Methods("GET")
 	api.HandleFunc("/mail/search", mailHandler.Search).Methods("POST")
 	api.HandleFunc("/mail/{id}", mailHandler.GetMessage).Methods("GET")
@@ -97,12 +97,11 @@ func (s *Server) setupRoutes() {
 	// Sling handlers (work dispatch)
 	slingHandler := handlers.NewSlingHandler(s.config.TownRoot)
 	api.HandleFunc("/sling", slingHandler.Dispatch).Methods("POST")
-=======
+
 	// Services handlers
 	servicesHandler := handlers.NewServicesHandler(s.config.TownRoot)
 	api.HandleFunc("/rigs/{rig}/services/witness/{action}", servicesHandler.HandleWitness).Methods("POST")
 	api.HandleFunc("/rigs/{rig}/services/refinery/{action}", servicesHandler.HandleRefinery).Methods("POST")
->>>>>>> 53e1e17 (feat(web): Add service control endpoint for witness/refinery)
 
 	// WebSocket handler
 	api.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {

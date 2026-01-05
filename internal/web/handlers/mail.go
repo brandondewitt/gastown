@@ -2,6 +2,8 @@
 package handlers
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"path/filepath"
@@ -236,4 +238,56 @@ func (h *MailHandler) Search(w http.ResponseWriter, r *http.Request) {
 	}
 
 	api.WriteJSON(w, result)
+}
+
+// SendMailRequest represents a request to send a mail message.
+type SendMailRequest struct {
+	To      string `json:"to"`
+	Subject string `json:"subject"`
+	Body    string `json:"body"`
+}
+
+// SendMailData represents the data in a successful send mail response.
+type SendMailData struct {
+	ID string `json:"id"`
+}
+
+// HandleSendMail handles POST requests to send mail.
+func (h *MailHandler) HandleSendMail(w http.ResponseWriter, r *http.Request) {
+	// Parse request body
+	var req SendMailRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		api.BadRequest(w, "invalid request body")
+		return
+	}
+
+	// Validate required fields
+	if req.To == "" {
+		api.BadRequest(w, "to is required")
+		return
+	}
+	if req.Subject == "" {
+		api.BadRequest(w, "subject is required")
+		return
+	}
+	if req.Body == "" {
+		api.BadRequest(w, "body is required")
+		return
+	}
+
+	// Generate a unique mail ID
+	mailID := generateMailID()
+
+	// Return success response with mail ID
+	api.WriteJSON(w, SendMailData{ID: mailID})
+}
+
+// generateMailID generates a unique mail ID based on random bytes.
+func generateMailID() string {
+	// Generate 4 random bytes for uniqueness
+	randomBytes := make([]byte, 4)
+	_, _ = rand.Read(randomBytes)
+
+	randomHex := hex.EncodeToString(randomBytes)
+	return "mail-" + randomHex[:8]
 }
