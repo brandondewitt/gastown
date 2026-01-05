@@ -42,6 +42,16 @@ type MailMessage struct {
 	CC        []string `json:"cc,omitempty"`
 }
 
+// ReplyRequest represents a request to reply to a mail message.
+type ReplyRequest struct {
+	Body string `json:"body"`
+}
+
+// ReplyResponse represents the response to a reply request.
+type ReplyResponse struct {
+	MessageID string `json:"message_id"`
+}
+
 // convertMessage converts a mail.Message to MailMessage for API response.
 func convertMessage(msg *mail.Message) MailMessage {
 	return MailMessage{
@@ -280,6 +290,66 @@ func (h *MailHandler) HandleSendMail(w http.ResponseWriter, r *http.Request) {
 
 	// Return success response with mail ID
 	api.WriteJSON(w, SendMailData{ID: mailID})
+}
+
+// Reply handles POST requests to reply to a mail message.
+func (h *MailHandler) Reply(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id := vars["id"]
+
+	if id == "" {
+		api.BadRequest(w, "mail id is required")
+		return
+	}
+
+	var req ReplyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		api.BadRequest(w, "invalid request body")
+		return
+	}
+
+	if req.Body == "" {
+		api.BadRequest(w, "body is required")
+		return
+	}
+
+	// Create a router to get the original message and send the reply
+	router := mail.NewRouterWithTownRoot(h.townRoot, h.townRoot)
+
+	// Get the original message from the town root mailbox
+	mailbox, err := router.GetMailbox("mayor/")
+	if err != nil {
+		api.InternalError(w, "failed to access mailbox")
+		return
+	}
+
+	// Get the original message
+	originalMsg, err := mailbox.Get(id)
+	if err != nil {
+		if err == mail.ErrMessageNotFound {
+			api.NotFound(w, "message not found: "+id)
+		} else {
+			api.InternalError(w, err.Error())
+		}
+		return
+	}
+
+	// Create a reply message
+	// The reply swaps the from and to addresses
+	replyMsg := mail.NewReplyMessage(originalMsg.To, originalMsg.From, "Re: "+originalMsg.Subject, req.Body, originalMsg)
+
+	// Send the reply
+	if err := router.Send(replyMsg); err != nil {
+		api.InternalError(w, "failed to send reply: "+err.Error())
+		return
+	}
+
+	// Return the new message ID
+	response := ReplyResponse{
+		MessageID: replyMsg.ID,
+	}
+
+	api.WriteJSON(w, response)
 }
 
 // DeleteMessage deletes a message by ID.

@@ -95,6 +95,7 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/mail/{id}", mailHandler.GetMessage).Methods("GET")
 	api.HandleFunc("/mail/{id}", mailHandler.DeleteMessage).Methods("DELETE")
 	api.HandleFunc("/mail/{id}/read", mailHandler.MarkRead).Methods("POST")
+	api.HandleFunc("/mail/{id}/reply", mailHandler.Reply).Methods("POST")
 	api.HandleFunc("/mail/agent/{address:.*}", mailHandler.ListAgentInbox).Methods("GET")
 
 	// Sling handlers (work dispatch)
