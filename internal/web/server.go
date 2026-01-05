@@ -87,6 +87,10 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/mail/{id}/read", mailHandler.MarkRead).Methods("POST")
 	api.HandleFunc("/mail/agent/{address:.*}", mailHandler.ListAgentInbox).Methods("GET")
 
+	// Sling handlers (work dispatch)
+	slingHandler := handlers.NewSlingHandler(s.config.TownRoot)
+	api.HandleFunc("/sling", slingHandler.Dispatch).Methods("POST")
+
 	// WebSocket handler
 	api.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		ws.ServeWS(s.hub, w, r)
