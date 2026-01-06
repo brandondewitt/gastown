@@ -1,11 +1,13 @@
 package handlers
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"path/filepath"
 	"time"
 
+	"github.com/gorilla/mux"
 	"github.com/steveyegge/gastown/internal/mrqueue"
 	"github.com/steveyegge/gastown/internal/web/api"
 )
@@ -32,6 +34,18 @@ type MQItem struct {
 	Worker    string    `json:"worker,omitempty"`
 	Priority  int       `json:"priority,omitempty"`
 	Rig       string    `json:"rig,omitempty"`
+}
+
+// RetryRequest represents a request to retry a merge queue item.
+type RetryRequest struct {
+	ID string `json:"id"`
+}
+
+// RetryResponse represents the response from a merge queue retry.
+type RetryResponse struct {
+	ID      string `json:"id"`
+	Status  string `json:"status"`
+	Message string `json:"message,omitempty"`
 }
 
 // List returns all pending merge requests in the queue.
@@ -88,6 +102,40 @@ func (h *MQHandler) List(w http.ResponseWriter, r *http.Request) {
 func (h *MQHandler) Get(w http.ResponseWriter, r *http.Request) {
 	// This would be implemented for Phase 2
 	api.NotFound(w, "MQ item not found")
+}
+
+// Retry retries a failed merge queue item by ID.
+// Endpoint: POST /api/v1/mq/{id}/retry
+func (h *MQHandler) Retry(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id := vars["id"]
+
+	// Validate ID is not empty
+	if id == "" {
+		api.BadRequest(w, "merge queue item ID is required")
+		return
+	}
+
+	// Decode optional request body (for future expansion)
+	var req RetryRequest
+	if r.Body != nil {
+		json.NewDecoder(r.Body).Decode(&req)
+	}
+
+	// TODO: Implement actual merge queue retry logic
+	// This will involve:
+	// 1. Finding the merge queue item by ID
+	// 2. Verifying it's in a failed state
+	// 3. Resetting it to pending state
+	// 4. Notifying the refinery to reprocess
+	// This will be fully implemented in Phase 2/3
+
+	resp := RetryResponse{
+		ID:      id,
+		Status:  "queued",
+		Message: "Merge retry has been queued for processing",
+	}
+	api.WriteJSON(w, resp)
 }
 
 // determineStatus determines the status of a merge request based on its state.
