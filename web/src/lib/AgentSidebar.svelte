@@ -213,4 +213,28 @@
   .agent-item.selected .mail-badge {
     background-color: rgba(255, 255, 255, 0.3);
   }
+
+  /* Mobile: slide-out drawer */
+  @media (max-width: 768px) {
+    .agent-sidebar {
+      position: fixed;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      z-index: 200;
+      width: 280px;
+      box-shadow: 4px 0 12px rgba(0, 0, 0, 0.15);
+      transform: translateX(0);
+      transition: transform var(--transition-normal);
+    }
+
+    .agent-item {
+      padding: var(--space-3) var(--space-4);
+      min-height: 44px; /* Touch-friendly target */
+    }
+
+    .sidebar-header {
+      padding: var(--space-4);
+    }
+  }
 </style>

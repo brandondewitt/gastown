@@ -497,5 +497,27 @@
       z-index: 100;
       box-shadow: -4px 0 12px rgba(0, 0, 0, 0.15);
     }
+
+    .section-header {
+      min-height: 44px; /* Touch-friendly target */
+    }
+
+    .action-btn {
+      min-height: 44px;
+      padding: var(--space-3);
+    }
+  }
+
+  @media (max-width: 768px) {
+    .agent-context {
+      width: 100%;
+      max-width: 320px;
+    }
+
+    .close-btn {
+      width: 2rem;
+      height: 2rem;
+      font-size: 1.5rem;
+    }
   }
 </style>

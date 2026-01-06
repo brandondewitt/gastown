@@ -173,4 +173,26 @@
     color: var(--color-error);
     font-size: 0.75rem;
   }
+
+  /* Mobile: larger touch targets */
+  @media (max-width: 768px) {
+    .message-input {
+      padding: var(--space-2) var(--space-3);
+    }
+
+    input {
+      font-size: 1rem;
+      padding: var(--space-3);
+      min-height: 44px;
+    }
+
+    .send-button {
+      width: 3rem;
+      height: 3rem;
+    }
+
+    .send-icon {
+      font-size: 1.125rem;
+    }
+  }
 </style>

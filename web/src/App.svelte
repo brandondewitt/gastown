@@ -261,6 +261,10 @@
     selectedAgent = agent;
     // Clear tab selection when agent is selected
     activeTab = 'dashboard';
+    // Close sidebar on mobile after selection
+    if (window.innerWidth < 768) {
+      sidebarOpen = false;
+    }
   }
 
   function toggleSidebar() {
@@ -346,6 +350,12 @@
         {selectedAgent}
         onSelect={handleAgentSelect}
       />
+      <!-- Mobile backdrop -->
+      <button
+        class="sidebar-backdrop"
+        onclick={() => sidebarOpen = false}
+        aria-label="Close sidebar"
+      ></button>
     {/if}
 
     <main class="main">
@@ -666,6 +676,23 @@
 
   .sidebar-toggle:hover {
     background-color: var(--color-surface-raised);
+  }
+
+  /* Sidebar backdrop for mobile */
+  .sidebar-backdrop {
+    display: none;
+  }
+
+  @media (max-width: 768px) {
+    .sidebar-backdrop {
+      display: block;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.5);
+      z-index: 150;
+      border: none;
+      cursor: pointer;
+    }
   }
 
   /* Agent Workspace - 3 Column Layout */
