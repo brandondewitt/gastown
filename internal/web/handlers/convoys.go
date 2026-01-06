@@ -1,10 +1,13 @@
 package handlers
 
 import (
-	"crypto/rand"
-	"encoding/hex"
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"os/exec"
+	"path/filepath"
+	"strings"
 
 	"github.com/gorilla/mux"
 	"github.com/steveyegge/gastown/internal/web/api"
@@ -24,9 +27,9 @@ func NewConvoysHandler(townRoot string) *ConvoysHandler {
 type ConvoyInfo struct {
 	ID          string   `json:"id"`
 	Name        string   `json:"name"`
-	Status      string   `json:"status"` // in_progress, landed
+	Status      string   `json:"status"` // open, closed
 	TrackedIDs  []string `json:"tracked_ids"`
-	Progress    float64  `json:"progress"` // 0.0 - 1.0
+	Progress    string   `json:"progress"` // e.g., "2/5"
 	Completed   int      `json:"completed"`
 	Total       int      `json:"total"`
 	CreatedAt   string   `json:"created_at,omitempty"`
@@ -44,11 +47,49 @@ type CreateConvoyResponse struct {
 	ID string `json:"id"`
 }
 
-// List returns all convoys.
+// List returns all open convoys.
 func (h *ConvoysHandler) List(w http.ResponseWriter, r *http.Request) {
-	// TODO: Implement convoy listing
-	// This will be fully implemented in Phase 3
-	api.WriteJSON(w, []ConvoyInfo{})
+	townBeads := filepath.Join(h.townRoot, ".beads")
+
+	// List all open convoy-type issues
+	listArgs := []string{"list", "--type=convoy", "--status=open", "--json"}
+	listCmd := exec.Command("bd", listArgs...)
+	listCmd.Dir = townBeads
+
+	var stdout bytes.Buffer
+	listCmd.Stdout = &stdout
+
+	if err := listCmd.Run(); err != nil {
+		api.InternalError(w, "failed to list convoys: "+err.Error())
+		return
+	}
+
+	var convoys []struct {
+		ID        string `json:"id"`
+		Title     string `json:"title"`
+		Status    string `json:"status"`
+		CreatedAt string `json:"created_at"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &convoys); err != nil {
+		api.InternalError(w, "failed to parse convoy list: "+err.Error())
+		return
+	}
+
+	// Convert to API response format
+	result := make([]ConvoyInfo, 0, len(convoys))
+	for _, c := range convoys {
+		info := ConvoyInfo{
+			ID:        c.ID,
+			Name:      c.Title,
+			Status:    c.Status,
+			CreatedAt: c.CreatedAt,
+			Progress:  "0/0", // Will be calculated from tracked issues
+			TrackedIDs: []string{},
+		}
+		result = append(result, info)
+	}
+
+	api.WriteJSON(w, result)
 }
 
 // Get returns a single convoy by ID.
@@ -56,9 +97,42 @@ func (h *ConvoysHandler) Get(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	id := vars["id"]
 
-	// TODO: Implement convoy lookup
-	// This will be fully implemented in Phase 3
-	api.NotFound(w, "convoy not found: "+id)
+	townBeads := filepath.Join(h.townRoot, ".beads")
+
+	// Get convoy details using bd show
+	showCmd := exec.Command("bd", "show", id, "--json")
+	showCmd.Dir = townBeads
+
+	var stdout bytes.Buffer
+	showCmd.Stdout = &stdout
+
+	if err := showCmd.Run(); err != nil {
+		api.NotFound(w, "convoy not found: "+id)
+		return
+	}
+
+	var convoy struct {
+		ID        string `json:"id"`
+		Title     string `json:"title"`
+		Status    string `json:"status"`
+		CreatedAt string `json:"created_at"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &convoy); err != nil {
+		api.InternalError(w, "failed to parse convoy: "+err.Error())
+		return
+	}
+
+	// Return convoy info
+	info := ConvoyInfo{
+		ID:        convoy.ID,
+		Name:      convoy.Title,
+		Status:    convoy.Status,
+		CreatedAt: convoy.CreatedAt,
+		Progress:  "0/0",
+		TrackedIDs: []string{},
+	}
+
+	api.WriteJSON(w, info)
 }
 
 // Create creates a new convoy.
@@ -80,22 +154,44 @@ func (h *ConvoysHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate convoy ID
-	convoyID := generateConvoyID()
+	townBeads := filepath.Join(h.townRoot, ".beads")
 
-	// TODO: Persist convoy to backend
-	// This will be fully implemented in Phase 2/3
+	// Create convoy using bd create command with type=convoy
+	// The name becomes the convoy title
+	createArgs := []string{
+		"create",
+		"--type=convoy",
+		fmt.Sprintf("--title=%s", req.Name),
+	}
+	createCmd := exec.Command("bd", createArgs...)
+	createCmd.Dir = townBeads
+
+	var stdout bytes.Buffer
+	createCmd.Stdout = &stdout
+
+	if err := createCmd.Run(); err != nil {
+		api.InternalError(w, "failed to create convoy: "+err.Error())
+		return
+	}
+
+	// Parse the created convoy ID from the output
+	convoyID := strings.TrimSpace(stdout.String())
+	if convoyID == "" {
+		api.InternalError(w, "failed to get convoy ID from creation")
+		return
+	}
+
+	// Add tracking dependencies for each issue
+	for _, issueID := range req.IssueIDs {
+		depCmd := exec.Command("bd", "dep", "add", convoyID, issueID, "--tracks")
+		depCmd.Dir = townBeads
+		if err := depCmd.Run(); err != nil {
+			// Log error but continue - convoy was created successfully
+		}
+	}
 
 	resp := CreateConvoyResponse{
 		ID: convoyID,
 	}
 	api.WriteJSON(w, resp)
-}
-
-// generateConvoyID generates a unique convoy ID.
-func generateConvoyID() string {
-	// Generate 6 random bytes and convert to hex for a 12-character ID
-	b := make([]byte, 6)
-	rand.Read(b)
-	return hex.EncodeToString(b)
 }
