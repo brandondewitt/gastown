@@ -9,6 +9,8 @@
   import IssuesList from './lib/IssuesList.svelte';
   import MailComposer from './lib/MailComposer.svelte';
   import AgentSidebar from './lib/AgentSidebar.svelte';
+  import TerminalOutput from './lib/TerminalOutput.svelte';
+  import MessageInput from './lib/MessageInput.svelte';
 
   // Types
   interface Agent {
@@ -363,7 +365,17 @@
             </div>
           {/if}
           <div class="agent-content">
-            <p class="placeholder-text">Terminal output and messaging coming in Phase 3-4...</p>
+            <!-- Terminal Output -->
+            <TerminalOutput agentAddress={selectedAgent.address} />
+
+            <!-- Message Input -->
+            <MessageInput
+              agentAddress={selectedAgent.address}
+              disabled={!selectedAgent.running}
+              placeholder="Send a message to {selectedAgent.name}..."
+            />
+
+            <!-- Agent Stats -->
             <div class="agent-stats">
               <div class="stat">
                 <span class="stat-label">Address</span>
