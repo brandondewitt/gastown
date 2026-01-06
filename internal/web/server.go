@@ -111,8 +111,7 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/rigs/{rig}/services/witness/{action}", servicesHandler.HandleWitness).Methods("POST")
 	api.HandleFunc("/rigs/{rig}/services/refinery/{action}", servicesHandler.HandleRefinery).Methods("POST")
 
-	// Merge queue handlers
-	mqHandler := handlers.NewMQHandler(s.config.TownRoot)
+	// Merge queue retry handler
 	api.HandleFunc("/mq/{id}/retry", mqHandler.Retry).Methods("POST")
 
 	// WebSocket handler
