@@ -2,18 +2,22 @@
 package web
 
 import (
+	"bufio"
 	"context"
 	"embed"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/steveyegge/gastown/internal/web/api"
 	"github.com/steveyegge/gastown/internal/web/handlers"
 	"github.com/steveyegge/gastown/internal/web/ws"
 )
@@ -240,8 +244,106 @@ func (s *Server) StartWithGracefulShutdown() error {
 
 // startEventBroadcaster watches for events and broadcasts them to WebSocket clients.
 func (s *Server) startEventBroadcaster() {
-	// TODO: Implement event file tailing and broadcasting
-	// This will be implemented in Phase 2: Real-time Events
+	eventsFile := filepath.Join(s.config.TownRoot, ".beads", "events.jsonl")
+
+	// Track the current file size and position for tailing
+	var lastSize int64
+	var file *os.File
+	var scanner *bufio.Scanner
+
+	// Polling interval for checking file changes
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		// Try to open/reopen the file
+		currentFile, err := os.Open(eventsFile)
+		if err != nil {
+			// File doesn't exist yet or can't be opened
+			if file != nil {
+				file.Close()
+				file = nil
+				scanner = nil
+			}
+			continue
+		}
+
+		// Get current file info
+		fileInfo, err := currentFile.Stat()
+		if err != nil {
+			currentFile.Close()
+			continue
+		}
+
+		currentSize := fileInfo.Size()
+
+		// If this is a new file or file was truncated, reset position
+		if file == nil || currentSize < lastSize {
+			if file != nil {
+				file.Close()
+			}
+			file = currentFile
+			lastSize = 0
+			scanner = bufio.NewScanner(file)
+		} else if currentSize > lastSize {
+			// File has new content, seek to last known position
+			if file != nil {
+				file.Close()
+			}
+			file = currentFile
+
+			// Seek to last known position
+			if _, err := file.Seek(lastSize, 0); err != nil {
+				file.Close()
+				file = nil
+				continue
+			}
+			scanner = bufio.NewScanner(file)
+		} else {
+			// No new content
+			currentFile.Close()
+			continue
+		}
+
+		// Read new lines from the file
+		if scanner != nil {
+			for scanner.Scan() {
+				line := scanner.Text()
+				if line == "" {
+					continue
+				}
+
+				// Parse the JSON event
+				var eventData map[string]interface{}
+				if err := json.Unmarshal([]byte(line), &eventData); err != nil {
+					log.Printf("Failed to parse event: %v", err)
+					continue
+				}
+
+				// Create WSMessage to broadcast
+				msg := &api.WSMessage{
+					Type:      api.WSTypeEvent,
+					Timestamp: time.Now(),
+					Payload:   eventData,
+				}
+
+				// Broadcast to WebSocket clients
+				s.hub.Broadcast(msg)
+
+				// Update position
+				lastSize, _ = file.Seek(0, 1) // Get current position
+			}
+		}
+
+		if file != nil {
+			lastSize, _ = file.Seek(0, 1) // Get final position
+		}
+	}
+
+	// Cleanup
+	if file != nil {
+		file.Close()
+	}
 }
 
 // Addr returns the server address.
