@@ -1,11 +1,15 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/steveyegge/gastown/internal/git"
@@ -79,11 +83,70 @@ func (h *PolecatsHandler) AddPolecat(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	rigName := vars["rig"]
 
-	// TODO: Implement actual polecat creation logic
-	// For now, return a mock response with the address format "rig/polecats/name"
+	// Construct the rig directory path
+	rigPath := filepath.Join(h.townRoot, rigName)
+
+	// Verify the rig directory exists
+	if _, err := os.Stat(rigPath); err != nil {
+		api.BadRequest(w, "rig not found: "+rigName)
+		return
+	}
+
+	// Execute 'gt polecat add <name>' in the rig directory
+	ctx := r.Context()
+	cmd := exec.CommandContext(ctx, "gt", "polecat", "add", req.Name)
+	cmd.Dir = rigPath
+
+	// Capture stderr and stdout
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	// Run the command with timeout
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Run()
+	}()
+
+	// Wait for command with timeout
+	select {
+	case err := <-done:
+		if err != nil {
+			// Command failed
+			errMsg := strings.TrimSpace(stderr.String())
+			if errMsg == "" {
+				errMsg = err.Error()
+			}
+			api.BadRequest(w, "failed to create polecat: "+errMsg)
+			return
+		}
+	case <-time.After(30 * time.Second):
+		api.InternalError(w, "polecat creation timeout")
+		return
+	}
+
+	// Parse the output to extract the polecat address
+	// The output format is expected to contain the polecat path
+	output := strings.TrimSpace(stdout.String())
+	polecatAddress := rigName + "/polecats/" + req.Name
+
+	// Try to extract a more specific address from the output if available
+	// For now, use the standard format
+	lines := strings.Split(output, "\n")
+	if len(lines) > 0 && lines[0] != "" {
+		// Check if output contains the address format
+		for _, line := range lines {
+			if strings.Contains(line, "/polecats/") {
+				polecatAddress = strings.TrimSpace(line)
+				break
+			}
+		}
+	}
+
+	// Return success with the created polecat address
 	data := PolecatData{
 		Name:    req.Name,
-		Address: rigName + "/polecats/" + req.Name,
+		Address: polecatAddress,
 	}
 
 	response := AddPolecatResponse{
