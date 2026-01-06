@@ -7,6 +7,7 @@
   import ConvoyCreator from './lib/ConvoyCreator.svelte';
   import IssueCreator from './lib/IssueCreator.svelte';
   import IssuesList from './lib/IssuesList.svelte';
+  import MailComposer from './lib/MailComposer.svelte';
 
   // Types
   interface Agent {
@@ -94,6 +95,7 @@
   let showConvoyCreator = $state(false);
   let showIssueCreator = $state(false);
   let slingIssueId = $state('');
+  let showMailComposer = $state(false);
 
   // Theme handling
   function initTheme() {
@@ -434,9 +436,14 @@
         <div class="mail-list" class:has-selected={selectedMessage}>
           <div class="mail-list-header">
             <h2>Inbox</h2>
-            <button class="btn btn-icon" onclick={fetchMail} title="Refresh">
-              🔄
-            </button>
+            <div class="mail-list-actions">
+              <button class="btn btn-primary btn-sm" onclick={() => showMailComposer = true}>
+                + Compose
+              </button>
+              <button class="btn btn-icon" onclick={fetchMail} title="Refresh">
+                🔄
+              </button>
+            </div>
           </div>
           {#if mailLoading && mailMessages.length === 0}
             <div class="loading-inline">
@@ -534,6 +541,18 @@
     <div class="modal-overlay" onclick={(e) => { if (e.target === e.currentTarget) showIssueCreator = false; }}>
       <div class="modal-content">
         <IssueCreator onCreated={() => showIssueCreator = false} />
+      </div>
+    </div>
+  {/if}
+
+  {#if showMailComposer}
+    <div class="modal-overlay" onclick={(e) => { if (e.target === e.currentTarget) showMailComposer = false; }}>
+      <div class="modal-content">
+        <div class="composer-header">
+          <h3>New Message</h3>
+          <button class="close-btn" onclick={() => showMailComposer = false}>✕</button>
+        </div>
+        <MailComposer onSent={() => { showMailComposer = false; fetchMail(); }} />
       </div>
     </div>
   {/if}
@@ -960,6 +979,12 @@
     font-weight: 600;
   }
 
+  .mail-list-actions {
+    display: flex;
+    gap: var(--space-2);
+    align-items: center;
+  }
+
   .mail-items {
     flex: 1;
     overflow-y: auto;
@@ -1256,5 +1281,40 @@
   /* Issues view */
   .issues-view {
     max-width: 900px;
+  }
+
+  /* Mail composer modal header */
+  .composer-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: var(--space-4);
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .composer-header h3 {
+    margin: 0;
+    font-size: 1.125rem;
+    font-weight: 600;
+  }
+
+  .close-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    background: none;
+    border: none;
+    color: var(--color-text-muted);
+    font-size: 1.25rem;
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+    transition: background-color var(--transition-fast), color var(--transition-fast);
+  }
+
+  .close-btn:hover {
+    background-color: var(--color-surface-raised);
+    color: var(--color-text);
   }
 </style>
