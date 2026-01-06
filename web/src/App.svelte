@@ -8,6 +8,7 @@
   import IssueCreator from './lib/IssueCreator.svelte';
   import IssuesList from './lib/IssuesList.svelte';
   import MailComposer from './lib/MailComposer.svelte';
+  import AgentSidebar from './lib/AgentSidebar.svelte';
 
   // Types
   interface Agent {
@@ -81,6 +82,8 @@
   let error: string | null = $state(null);
   let activeTab: 'dashboard' | 'issues' | 'mail' = $state('dashboard');
   let theme: 'dark' | 'light' = $state('dark');
+  let selectedAgent: Agent | null = $state(null);
+  let sidebarOpen = $state(true);
 
   // Mail state
   let mailMessages: MailMessage[] = $state([]);
@@ -249,11 +252,24 @@
     slingIssueId = issueId;
     showSlingDialog = true;
   }
+
+  function handleAgentSelect(agent: Agent) {
+    selectedAgent = agent;
+    // Clear tab selection when agent is selected
+    activeTab = 'dashboard';
+  }
+
+  function toggleSidebar() {
+    sidebarOpen = !sidebarOpen;
+  }
 </script>
 
 <div class="app">
   <header class="header">
     <div class="header-left">
+      <button class="sidebar-toggle" onclick={toggleSidebar} title="Toggle sidebar">
+        ☰
+      </button>
       <div class="logo">
         <span class="logo-icon">⛽</span>
         <h1>Gas Town</h1>
@@ -261,22 +277,22 @@
       <nav class="nav-tabs">
         <button
           class="nav-tab"
-          class:active={activeTab === 'dashboard'}
-          onclick={() => activeTab = 'dashboard'}
+          class:active={activeTab === 'dashboard' && !selectedAgent}
+          onclick={() => { activeTab = 'dashboard'; selectedAgent = null; }}
         >
           Dashboard
         </button>
         <button
           class="nav-tab"
           class:active={activeTab === 'issues'}
-          onclick={() => activeTab = 'issues'}
+          onclick={() => { activeTab = 'issues'; selectedAgent = null; }}
         >
           Issues
         </button>
         <button
           class="nav-tab"
           class:active={activeTab === 'mail'}
-          onclick={() => { activeTab = 'mail'; fetchMail(); }}
+          onclick={() => { activeTab = 'mail'; selectedAgent = null; fetchMail(); }}
         >
           Mail
           {#if mailCount.unread > 0}
@@ -317,9 +333,55 @@
     </div>
   </header>
 
-  <main class="main">
-    {#if activeTab === 'dashboard'}
-      {#if loading}
+  <div class="app-layout">
+    <!-- Agent Sidebar -->
+    {#if sidebarOpen}
+      <AgentSidebar
+        globalAgents={status?.agents || []}
+        rigs={status?.rigs || []}
+        {selectedAgent}
+        onSelect={handleAgentSelect}
+      />
+    {/if}
+
+    <main class="main">
+      <!-- Selected Agent View -->
+      {#if selectedAgent}
+        <div class="agent-workspace-placeholder">
+          <div class="agent-header">
+            <h2>{getRoleIcon(selectedAgent.role)} {selectedAgent.name}</h2>
+            <span class="agent-role">{selectedAgent.role}</span>
+            <span class="status-badge" class:running={selectedAgent.running}>
+              {selectedAgent.running ? 'Running' : 'Stopped'}
+            </span>
+          </div>
+          {#if selectedAgent.has_work && selectedAgent.work_title}
+            <div class="current-work-banner">
+              <span class="work-label">Working on:</span>
+              <span class="work-id">{selectedAgent.hook_bead}</span>
+              <span class="work-title-text">{selectedAgent.work_title}</span>
+            </div>
+          {/if}
+          <div class="agent-content">
+            <p class="placeholder-text">Terminal output and messaging coming in Phase 3-4...</p>
+            <div class="agent-stats">
+              <div class="stat">
+                <span class="stat-label">Address</span>
+                <span class="stat-value mono">{selectedAgent.address}</span>
+              </div>
+              <div class="stat">
+                <span class="stat-label">Session</span>
+                <span class="stat-value mono">{selectedAgent.session}</span>
+              </div>
+              <div class="stat">
+                <span class="stat-label">Unread Mail</span>
+                <span class="stat-value">{selectedAgent.unread_mail}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      {:else if activeTab === 'dashboard'}
+        {#if loading}
         <div class="loading">
           <div class="spinner"></div>
           <p>Loading town status...</p>
@@ -520,7 +582,8 @@
         </div>
       </div>
     {/if}
-  </main>
+    </main>
+  </div>
 
   <footer class="footer">
     <p class="text-muted">Gas Town Dashboard v0.1.1</p>
@@ -563,6 +626,139 @@
     display: flex;
     flex-direction: column;
     min-height: 100vh;
+  }
+
+  .app-layout {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  .sidebar-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    background: none;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    font-size: 1rem;
+    color: var(--color-text);
+    transition: all var(--transition-fast);
+  }
+
+  .sidebar-toggle:hover {
+    background-color: var(--color-surface-raised);
+  }
+
+  /* Agent Workspace Placeholder */
+  .agent-workspace-placeholder {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  .agent-header {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    flex-wrap: wrap;
+  }
+
+  .agent-header h2 {
+    font-size: 1.5rem;
+    font-weight: 600;
+    margin: 0;
+  }
+
+  .agent-role {
+    padding: var(--space-1) var(--space-2);
+    background-color: var(--color-surface-raised);
+    border-radius: var(--radius-sm);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--color-text-muted);
+  }
+
+  .status-badge {
+    padding: var(--space-1) var(--space-2);
+    border-radius: var(--radius-sm);
+    font-size: 0.75rem;
+    font-weight: 500;
+    background-color: var(--color-text-muted);
+    color: white;
+  }
+
+  .status-badge.running {
+    background-color: var(--color-success);
+  }
+
+  .current-work-banner {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-3);
+    background-color: var(--color-surface-raised);
+    border-radius: var(--radius-md);
+    border-left: 3px solid var(--color-primary);
+  }
+
+  .work-label {
+    font-size: 0.75rem;
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+  }
+
+  .work-id {
+    font-family: var(--font-mono);
+    font-size: 0.875rem;
+    color: var(--color-primary);
+  }
+
+  .work-title-text {
+    font-size: 0.875rem;
+    color: var(--color-text);
+  }
+
+  .agent-content {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  .placeholder-text {
+    color: var(--color-text-muted);
+    font-style: italic;
+  }
+
+  .agent-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: var(--space-3);
+  }
+
+  .stat {
+    padding: var(--space-3);
+    background-color: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+  }
+
+  .stat-label {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: var(--space-1);
+  }
+
+  .stat-value {
+    font-size: 0.875rem;
+    font-weight: 500;
   }
 
   .header {
