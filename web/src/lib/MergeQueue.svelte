@@ -4,9 +4,9 @@
   interface MergeQueueItem {
     id: string;
     branch: string;
-    status: 'pending' | 'merging' | 'completed' | 'failed';
+    status: 'pending' | 'in_flight' | 'blocked' | 'completed' | 'failed';
     position: number;
-    enqueued_at: string;
+    created_at: string;
   }
 
   interface ApiResponse {
@@ -39,8 +39,8 @@
       const response = await fetch('/api/v1/mq');
       const data: ApiResponse = await response.json();
 
-      if (data.success && data.data) {
-        items = data.data;
+      if (data.success) {
+        items = data.data || [];  // Handle null as empty array
       } else {
         error = data.error?.message || 'Failed to fetch merge queue';
       }
@@ -75,7 +75,8 @@
   function getStatusColor(status: string): string {
     const colors: Record<string, string> = {
       pending: 'var(--color-warning)',
-      merging: 'var(--color-info)',
+      in_flight: 'var(--color-info)',
+      blocked: 'var(--color-error)',
       completed: 'var(--color-success)',
       failed: 'var(--color-error)',
     };
@@ -85,7 +86,8 @@
   function getStatusIcon(status: string): string {
     const icons: Record<string, string> = {
       pending: '⏳',
-      merging: '🔄',
+      in_flight: '🔄',
+      blocked: '🚧',
       completed: '✅',
       failed: '❌',
     };
@@ -152,7 +154,7 @@
                 </span>
               </div>
               <div class="item-meta">
-                <span class="time-in-queue">Enqueued {formatTime(item.enqueued_at)}</span>
+                <span class="time-in-queue">Enqueued {formatTime(item.created_at)}</span>
               </div>
             </div>
             {#if item.status === 'failed'}
