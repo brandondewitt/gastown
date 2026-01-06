@@ -11,6 +11,7 @@
   import AgentSidebar from './lib/AgentSidebar.svelte';
   import TerminalOutput from './lib/TerminalOutput.svelte';
   import MessageInput from './lib/MessageInput.svelte';
+  import AgentContext from './lib/AgentContext.svelte';
 
   // Types
   interface Agent {
@@ -86,6 +87,7 @@
   let theme: 'dark' | 'light' = $state('dark');
   let selectedAgent: Agent | null = $state(null);
   let sidebarOpen = $state(true);
+  let contextOpen = $state(true);
 
   // Mail state
   let mailMessages: MailMessage[] = $state([]);
@@ -349,48 +351,49 @@
     <main class="main">
       <!-- Selected Agent View -->
       {#if selectedAgent}
-        <div class="agent-workspace-placeholder">
-          <div class="agent-header">
-            <h2>{getRoleIcon(selectedAgent.role)} {selectedAgent.name}</h2>
-            <span class="agent-role">{selectedAgent.role}</span>
-            <span class="status-badge" class:running={selectedAgent.running}>
-              {selectedAgent.running ? 'Running' : 'Stopped'}
-            </span>
-          </div>
-          {#if selectedAgent.has_work && selectedAgent.work_title}
-            <div class="current-work-banner">
-              <span class="work-label">Working on:</span>
-              <span class="work-id">{selectedAgent.hook_bead}</span>
-              <span class="work-title-text">{selectedAgent.work_title}</span>
+        <div class="agent-workspace">
+          <div class="workspace-main">
+            <div class="agent-header">
+              <div class="agent-header-left">
+                <h2>{getRoleIcon(selectedAgent.role)} {selectedAgent.name}</h2>
+                <span class="agent-role">{selectedAgent.role}</span>
+                <span class="status-badge" class:running={selectedAgent.running}>
+                  {selectedAgent.running ? 'Running' : 'Stopped'}
+                </span>
+              </div>
+              <button class="context-toggle" onclick={() => contextOpen = !contextOpen} title="Toggle context panel">
+                {contextOpen ? '→' : '←'} Context
+              </button>
             </div>
-          {/if}
-          <div class="agent-content">
-            <!-- Terminal Output -->
-            <TerminalOutput agentAddress={selectedAgent.address} />
+            {#if selectedAgent.has_work && selectedAgent.work_title}
+              <div class="current-work-banner">
+                <span class="work-label">Working on:</span>
+                <span class="work-id">{selectedAgent.hook_bead}</span>
+                <span class="work-title-text">{selectedAgent.work_title}</span>
+              </div>
+            {/if}
+            <div class="agent-content">
+              <!-- Terminal Output -->
+              <TerminalOutput agentAddress={selectedAgent.address} />
 
-            <!-- Message Input -->
-            <MessageInput
-              agentAddress={selectedAgent.address}
-              disabled={!selectedAgent.running}
-              placeholder="Send a message to {selectedAgent.name}..."
+              <!-- Message Input -->
+              <MessageInput
+                agentAddress={selectedAgent.address}
+                disabled={!selectedAgent.running}
+                placeholder="Send a message to {selectedAgent.name}..."
+              />
+            </div>
+          </div>
+
+          <!-- Context Panel -->
+          {#if contextOpen}
+            <AgentContext
+              agent={selectedAgent}
+              onDispatchWork={() => { slingIssueId = ''; showSlingDialog = true; }}
+              onSendMail={() => showMailComposer = true}
+              onClose={() => contextOpen = false}
             />
-
-            <!-- Agent Stats -->
-            <div class="agent-stats">
-              <div class="stat">
-                <span class="stat-label">Address</span>
-                <span class="stat-value mono">{selectedAgent.address}</span>
-              </div>
-              <div class="stat">
-                <span class="stat-label">Session</span>
-                <span class="stat-value mono">{selectedAgent.session}</span>
-              </div>
-              <div class="stat">
-                <span class="stat-label">Unread Mail</span>
-                <span class="stat-value">{selectedAgent.unread_mail}</span>
-              </div>
-            </div>
-          </div>
+          {/if}
         </div>
       {:else if activeTab === 'dashboard'}
         {#if loading}
@@ -665,14 +668,32 @@
     background-color: var(--color-surface-raised);
   }
 
-  /* Agent Workspace Placeholder */
-  .agent-workspace-placeholder {
+  /* Agent Workspace - 3 Column Layout */
+  .agent-workspace {
+    display: flex;
+    gap: var(--space-4);
+    height: calc(100vh - 180px);
+    min-height: 400px;
+  }
+
+  .workspace-main {
+    flex: 1;
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
+    min-width: 0;
+    overflow: hidden;
   }
 
   .agent-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    flex-wrap: wrap;
+  }
+
+  .agent-header-left {
     display: flex;
     align-items: center;
     gap: var(--space-3);
@@ -683,6 +704,32 @@
     font-size: 1.5rem;
     font-weight: 600;
     margin: 0;
+  }
+
+  .context-toggle {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    padding: var(--space-2) var(--space-3);
+    background: var(--color-surface-raised);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    color: var(--color-text-muted);
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+  }
+
+  .context-toggle:hover {
+    background: var(--color-surface);
+    color: var(--color-text);
+  }
+
+  @media (max-width: 1024px) {
+    .agent-workspace {
+      flex-direction: column;
+      height: auto;
+    }
   }
 
   .agent-role {
