@@ -102,6 +102,10 @@ func (s *Server) setupRoutes() {
 	slingHandler := handlers.NewSlingHandler(s.config.TownRoot)
 	api.HandleFunc("/sling", slingHandler.Dispatch).Methods("POST")
 
+	// MQ handlers (merge queue)
+	mqHandler := handlers.NewMQHandler(s.config.TownRoot)
+	api.HandleFunc("/mq", mqHandler.List).Methods("GET")
+
 	// Services handlers
 	servicesHandler := handlers.NewServicesHandler(s.config.TownRoot)
 	api.HandleFunc("/rigs/{rig}/services/witness/{action}", servicesHandler.HandleWitness).Methods("POST")
