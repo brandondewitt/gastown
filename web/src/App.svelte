@@ -3,6 +3,9 @@
   import './app.css';
   import MergeQueue from './lib/MergeQueue.svelte';
   import ActivityFeed from './lib/ActivityFeed.svelte';
+  import SlingDialog from './lib/SlingDialog.svelte';
+  import ConvoyCreator from './lib/ConvoyCreator.svelte';
+  import IssueCreator from './lib/IssueCreator.svelte';
 
   // Types
   interface Agent {
@@ -83,6 +86,12 @@
   let mailError: string | null = null;
   let selectedMessage: MailMessage | null = null;
   let mailCount = { total: 0, unread: 0 };
+
+  // Dialog state
+  let showCreateMenu = $state(false);
+  let showSlingDialog = $state(false);
+  let showConvoyCreator = $state(false);
+  let showIssueCreator = $state(false);
 
   // Theme handling
   function initTheme() {
@@ -244,14 +253,14 @@
         <button
           class="nav-tab"
           class:active={activeTab === 'dashboard'}
-          on:click={() => activeTab = 'dashboard'}
+          onclick={() => activeTab = 'dashboard'}
         >
           Dashboard
         </button>
         <button
           class="nav-tab"
           class:active={activeTab === 'mail'}
-          on:click={() => { activeTab = 'mail'; fetchMail(); }}
+          onclick={() => { activeTab = 'mail'; fetchMail(); }}
         >
           Mail
           {#if mailCount.unread > 0}
@@ -261,10 +270,28 @@
       </nav>
     </div>
     <div class="header-right">
+      <div class="create-dropdown">
+        <button class="btn btn-primary create-btn" onclick={() => showCreateMenu = !showCreateMenu}>
+          + Create
+        </button>
+        {#if showCreateMenu}
+          <div class="create-menu">
+            <button onclick={() => { showCreateMenu = false; showIssueCreator = true; }}>
+              📝 New Issue
+            </button>
+            <button onclick={() => { showCreateMenu = false; showSlingDialog = true; }}>
+              🚀 Dispatch Work
+            </button>
+            <button onclick={() => { showCreateMenu = false; showConvoyCreator = true; }}>
+              📦 New Convoy
+            </button>
+          </div>
+        {/if}
+      </div>
       {#if status}
         <span class="town-name">{status.name}</span>
       {/if}
-      <button class="theme-toggle" on:click={toggleTheme} title="Toggle theme">
+      <button class="theme-toggle" onclick={toggleTheme} title="Toggle theme">
         {#if theme === 'dark'}
           <span class="theme-icon">☀️</span>
         {:else}
@@ -285,7 +312,7 @@
         <div class="error-container">
           <div class="error-icon">⚠️</div>
           <p class="error-text">{error}</p>
-          <button class="btn btn-primary" on:click={fetchStatus}>Retry</button>
+          <button class="btn btn-primary" onclick={fetchStatus}>Retry</button>
         </div>
       {:else if status}
         <!-- Summary Cards -->
@@ -389,7 +416,7 @@
         <div class="mail-list" class:has-selected={selectedMessage}>
           <div class="mail-list-header">
             <h2>Inbox</h2>
-            <button class="btn btn-icon" on:click={fetchMail} title="Refresh">
+            <button class="btn btn-icon" onclick={fetchMail} title="Refresh">
               🔄
             </button>
           </div>
@@ -401,7 +428,7 @@
           {:else if mailError}
             <div class="error-inline">
               <span>⚠️ {mailError}</span>
-              <button class="btn btn-sm" on:click={fetchMail}>Retry</button>
+              <button class="btn btn-sm" onclick={fetchMail}>Retry</button>
             </div>
           {:else if mailMessages.length === 0}
             <div class="empty-state">
@@ -415,7 +442,7 @@
                   class="mail-item"
                   class:unread={!msg.read}
                   class:selected={selectedMessage?.id === msg.id}
-                  on:click={() => selectMessage(msg)}
+                  onclick={() => selectMessage(msg)}
                 >
                   <div class="mail-item-header">
                     <span class="mail-from">{msg.from}</span>
@@ -437,7 +464,7 @@
         <div class="mail-detail" class:visible={selectedMessage}>
           {#if selectedMessage}
             <div class="mail-detail-header">
-              <button class="btn-back" on:click={() => selectedMessage = null}>
+              <button class="btn-back" onclick={() => selectedMessage = null}>
                 ← Back
               </button>
               <div class="mail-detail-meta">
@@ -473,6 +500,25 @@
   <footer class="footer">
     <p class="text-muted">Gas Town Dashboard v0.1.1</p>
   </footer>
+
+  <!-- Dialogs -->
+  <SlingDialog bind:isOpen={showSlingDialog} />
+
+  {#if showConvoyCreator}
+    <div class="modal-overlay" onclick={(e) => { if (e.target === e.currentTarget) showConvoyCreator = false; }}>
+      <div class="modal-content">
+        <ConvoyCreator onCreated={() => showConvoyCreator = false} />
+      </div>
+    </div>
+  {/if}
+
+  {#if showIssueCreator}
+    <div class="modal-overlay" onclick={(e) => { if (e.target === e.currentTarget) showIssueCreator = false; }}>
+      <div class="modal-content">
+        <IssueCreator onCreated={() => showIssueCreator = false} />
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -1116,5 +1162,76 @@
     padding: var(--space-3) var(--space-4);
     text-align: center;
     border-top: 1px solid var(--color-border);
+  }
+
+  /* Create dropdown */
+  .create-dropdown {
+    position: relative;
+  }
+
+  .create-btn {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    padding: var(--space-2) var(--space-3);
+    font-size: 0.875rem;
+  }
+
+  .create-menu {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    margin-top: var(--space-2);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    min-width: 180px;
+    z-index: 100;
+    overflow: hidden;
+  }
+
+  .create-menu button {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    width: 100%;
+    padding: var(--space-3) var(--space-4);
+    text-align: left;
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 0.875rem;
+    color: var(--color-text);
+    transition: background-color var(--transition-fast);
+  }
+
+  .create-menu button:hover {
+    background: var(--color-surface-raised);
+  }
+
+  /* Modal overlay */
+  .modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    padding: var(--space-4);
+  }
+
+  .modal-content {
+    background: var(--color-surface);
+    border-radius: var(--radius-lg);
+    max-width: 500px;
+    width: 100%;
+    max-height: 90vh;
+    overflow: auto;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
   }
 </style>

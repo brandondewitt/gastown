@@ -78,7 +78,7 @@
         },
         body: JSON.stringify({
           issue_id: issueId.trim(),
-          rig: selectedRig,
+          target: selectedRig,
         }),
       });
 

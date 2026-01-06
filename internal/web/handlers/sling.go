@@ -1,8 +1,12 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
+	"os/exec"
+	"strings"
+	"time"
 
 	"github.com/steveyegge/gastown/internal/web/api"
 )
@@ -31,11 +35,11 @@ type SlingRequest struct {
 type SlingResponse struct {
 	// Success indicates if the dispatch was successful
 	Success bool `json:"success"`
-	// DispatchID is the unique ID for this dispatch
-	DispatchID string `json:"dispatch_id"`
 	// Message describes the result
 	Message string `json:"message"`
-	// IssuID echoes the dispatched issue ID
+	// Output contains the command output
+	Output string `json:"output,omitempty"`
+	// IssueID echoes the dispatched issue ID
 	IssueID string `json:"issue_id"`
 	// Target echoes the target agent
 	Target string `json:"target"`
@@ -61,43 +65,54 @@ func (h *SlingHandler) Dispatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create a dispatch ID for tracking
-	// In a real implementation, this would create an actual dispatch record
-	dispatchID := generateDispatchID()
-
-	// Build response
-	resp := SlingResponse{
-		Success:    true,
-		DispatchID: dispatchID,
-		IssueID:    req.IssueID,
-		Target:     req.Target,
-		Message:    "Work dispatched successfully",
+	// Build gt sling command
+	args := []string{"sling", req.IssueID, req.Target}
+	if req.Message != "" {
+		args = append(args, "--args", req.Message)
 	}
 
-	// In a real implementation, this would:
-	// 1. Validate the issue exists
-	// 2. Validate the target agent/rig is available
-	// 3. Create a dispatch record in the beads system
-	// 4. Send a message/hook to the target agent
-	// 5. Return confirmation with dispatch tracking ID
+	// Execute 'gt sling <issue_id> <target>' from town root
+	ctx := r.Context()
+	cmd := exec.CommandContext(ctx, "gt", args...)
+	cmd.Dir = h.townRoot
+
+	// Capture stderr and stdout
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	// Run the command with timeout
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Run()
+	}()
+
+	// Wait for command with timeout
+	select {
+	case err := <-done:
+		if err != nil {
+			// Command failed
+			errMsg := strings.TrimSpace(stderr.String())
+			if errMsg == "" {
+				errMsg = err.Error()
+			}
+			api.BadRequest(w, "sling failed: "+errMsg)
+			return
+		}
+	case <-time.After(30 * time.Second):
+		api.InternalError(w, "sling timeout")
+		return
+	}
+
+	// Build success response
+	output := strings.TrimSpace(stdout.String())
+	resp := SlingResponse{
+		Success: true,
+		Message: "Work dispatched successfully",
+		Output:  output,
+		IssueID: req.IssueID,
+		Target:  req.Target,
+	}
 
 	api.WriteJSON(w, resp)
-}
-
-// generateDispatchID generates a unique ID for dispatch tracking.
-// In a real implementation, this would use the beads/Gas Town ID system.
-func generateDispatchID() string {
-	// Simple placeholder - real implementation would use proper ID generation
-	return "dispatch-" + randString(12)
-}
-
-// randString generates a random string of specified length.
-// Real implementation would use a proper random ID generator.
-func randString(length int) string {
-	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
-	result := make([]byte, length)
-	for i := range result {
-		result[i] = chars[i%len(chars)]
-	}
-	return string(result)
 }
