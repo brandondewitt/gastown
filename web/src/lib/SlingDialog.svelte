@@ -14,19 +14,27 @@
 
   interface Props {
     isOpen?: boolean;
+    initialIssueId?: string;
   }
 
   // Props
-  let { isOpen = $bindable(false) }: Props = $props();
+  let { isOpen = $bindable(false), initialIssueId = '' }: Props = $props();
 
   // Form state
-  let issueId = $state('');
+  let issueId = $state(initialIssueId);
   let selectedRig = $state('');
   let rigs: Rig[] = $state([]);
   let loading = $state(false);
   let error: string | null = $state(null);
   let success = $state(false);
   let rigsLoading = $state(false);
+
+  // Update issueId when initialIssueId changes
+  $effect(() => {
+    if (initialIssueId) {
+      issueId = initialIssueId;
+    }
+  });
 
   // Fetch rigs on mount
   onMount(async () => {

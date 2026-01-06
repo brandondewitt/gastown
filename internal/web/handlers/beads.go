@@ -21,6 +21,18 @@ func NewBeadsHandler(townRoot string) *BeadsHandler {
 	return &BeadsHandler{townRoot: townRoot}
 }
 
+// BeadItem represents a bead/issue in list responses.
+type BeadItem struct {
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Type        string `json:"type"`
+	Status      string `json:"status"`
+	Priority    int    `json:"priority"`
+	PriorityStr string `json:"priority_str,omitempty"`
+	CreatedAt   string `json:"created_at,omitempty"`
+	UpdatedAt   string `json:"updated_at,omitempty"`
+}
+
 // CreateBeadRequest represents a request to create a new bead/issue.
 type CreateBeadRequest struct {
 	// Title is the issue title (required)
@@ -145,4 +157,108 @@ func (h *BeadsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	api.WriteJSON(w, resp)
+}
+
+// List handles GET requests to list beads/issues.
+func (h *BeadsHandler) List(w http.ResponseWriter, r *http.Request) {
+	// Get query parameters for filtering
+	status := r.URL.Query().Get("status")
+	beadType := r.URL.Query().Get("type")
+
+	// Build bd list command with --json flag
+	args := []string{"list", "--json"}
+
+	// Add optional status filter
+	if status != "" && status != "all" {
+		args = append(args, "--status", status)
+	}
+
+	// Add optional type filter
+	if beadType != "" {
+		args = append(args, "--type", beadType)
+	}
+
+	// Execute 'bd list --json' from town root
+	ctx := r.Context()
+	cmd := exec.CommandContext(ctx, "bd", args...)
+	cmd.Dir = h.townRoot
+
+	// Capture stdout and stderr
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	// Run the command with timeout
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Run()
+	}()
+
+	// Wait for command with timeout
+	select {
+	case err := <-done:
+		if err != nil {
+			// Command failed
+			errMsg := strings.TrimSpace(stderr.String())
+			if errMsg == "" {
+				errMsg = err.Error()
+			}
+			api.BadRequest(w, "failed to list beads: "+errMsg)
+			return
+		}
+	case <-time.After(30 * time.Second):
+		api.InternalError(w, "bead list timeout")
+		return
+	}
+
+	// Parse the JSON output from bd list
+	output := strings.TrimSpace(stdout.String())
+
+	// Handle empty output
+	if output == "" || output == "[]" {
+		api.WriteJSON(w, []BeadItem{})
+		return
+	}
+
+	// Parse the JSON output - bd list --json outputs a JSON array
+	var beads []BeadItem
+
+	// First, try to find the JSON content (skip any warning lines)
+	jsonStart := strings.Index(output, "[")
+	if jsonStart == -1 {
+		// No array found - try object with data field
+		jsonStart = strings.Index(output, "{")
+	}
+
+	if jsonStart == -1 {
+		api.WriteJSON(w, []BeadItem{})
+		return
+	}
+
+	jsonContent := output[jsonStart:]
+
+	// Check if it's an array or wrapped object
+	if strings.HasPrefix(jsonContent, "[") {
+		// Direct array format
+		if err := json.Unmarshal([]byte(jsonContent), &beads); err != nil {
+			api.InternalError(w, "failed to parse beads list: "+err.Error())
+			return
+		}
+	} else {
+		// Wrapped format: {"data": [...]}
+		var wrappedResp struct {
+			Data []BeadItem `json:"data"`
+		}
+		if err := json.Unmarshal([]byte(jsonContent), &wrappedResp); err != nil {
+			api.InternalError(w, "failed to parse beads response: "+err.Error())
+			return
+		}
+		beads = wrappedResp.Data
+	}
+
+	if beads == nil {
+		beads = []BeadItem{}
+	}
+
+	api.WriteJSON(w, beads)
 }

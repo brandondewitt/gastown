@@ -6,6 +6,7 @@
   import SlingDialog from './lib/SlingDialog.svelte';
   import ConvoyCreator from './lib/ConvoyCreator.svelte';
   import IssueCreator from './lib/IssueCreator.svelte';
+  import IssuesList from './lib/IssuesList.svelte';
 
   // Types
   interface Agent {
@@ -74,24 +75,25 @@
   }
 
   // State
-  let status: TownStatus | null = null;
-  let loading = true;
-  let error: string | null = null;
-  let activeTab: 'dashboard' | 'mail' = 'dashboard';
-  let theme: 'dark' | 'light' = 'dark';
+  let status: TownStatus | null = $state(null);
+  let loading = $state(true);
+  let error: string | null = $state(null);
+  let activeTab: 'dashboard' | 'issues' | 'mail' = $state('dashboard');
+  let theme: 'dark' | 'light' = $state('dark');
 
   // Mail state
-  let mailMessages: MailMessage[] = [];
-  let mailLoading = false;
-  let mailError: string | null = null;
-  let selectedMessage: MailMessage | null = null;
-  let mailCount = { total: 0, unread: 0 };
+  let mailMessages: MailMessage[] = $state([]);
+  let mailLoading = $state(false);
+  let mailError: string | null = $state(null);
+  let selectedMessage: MailMessage | null = $state(null);
+  let mailCount = $state({ total: 0, unread: 0 });
 
   // Dialog state
   let showCreateMenu = $state(false);
   let showSlingDialog = $state(false);
   let showConvoyCreator = $state(false);
   let showIssueCreator = $state(false);
+  let slingIssueId = $state('');
 
   // Theme handling
   function initTheme() {
@@ -240,6 +242,11 @@
     };
     return colors[role] || 'var(--color-gray)';
   }
+
+  function handleDispatchFromIssues(issueId: string) {
+    slingIssueId = issueId;
+    showSlingDialog = true;
+  }
 </script>
 
 <div class="app">
@@ -256,6 +263,13 @@
           onclick={() => activeTab = 'dashboard'}
         >
           Dashboard
+        </button>
+        <button
+          class="nav-tab"
+          class:active={activeTab === 'issues'}
+          onclick={() => activeTab = 'issues'}
+        >
+          Issues
         </button>
         <button
           class="nav-tab"
@@ -279,7 +293,7 @@
             <button onclick={() => { showCreateMenu = false; showIssueCreator = true; }}>
               📝 New Issue
             </button>
-            <button onclick={() => { showCreateMenu = false; showSlingDialog = true; }}>
+            <button onclick={() => { showCreateMenu = false; slingIssueId = ''; showSlingDialog = true; }}>
               🚀 Dispatch Work
             </button>
             <button onclick={() => { showCreateMenu = false; showConvoyCreator = true; }}>
@@ -411,6 +425,10 @@
           <ActivityFeed />
         </section>
       {/if}
+    {:else if activeTab === 'issues'}
+      <div class="issues-view">
+        <IssuesList onDispatch={handleDispatchFromIssues} />
+      </div>
     {:else if activeTab === 'mail'}
       <div class="mail-container">
         <div class="mail-list" class:has-selected={selectedMessage}>
@@ -502,7 +520,7 @@
   </footer>
 
   <!-- Dialogs -->
-  <SlingDialog bind:isOpen={showSlingDialog} />
+  <SlingDialog bind:isOpen={showSlingDialog} initialIssueId={slingIssueId} />
 
   {#if showConvoyCreator}
     <div class="modal-overlay" onclick={(e) => { if (e.target === e.currentTarget) showConvoyCreator = false; }}>
@@ -1233,5 +1251,10 @@
     max-height: 90vh;
     overflow: auto;
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  }
+
+  /* Issues view */
+  .issues-view {
+    max-width: 900px;
   }
 </style>
