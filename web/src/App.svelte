@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import './app.css';
+  import MergeQueue from './lib/MergeQueue.svelte';
+  import ActivityFeed from './lib/ActivityFeed.svelte';
 
   // Types
   interface Agent {
@@ -368,6 +370,18 @@
               </div>
             {/each}
           </div>
+        </section>
+
+        <!-- Merge Queue Section -->
+        <section class="card">
+          <h2 class="card-header">Merge Queue</h2>
+          <MergeQueue />
+        </section>
+
+        <!-- Activity Feed Section -->
+        <section class="card">
+          <h2 class="card-header">Recent Activity</h2>
+          <ActivityFeed />
         </section>
       {/if}
     {:else if activeTab === 'mail'}
