@@ -168,7 +168,7 @@ func (m *Mailbox) identityVariants() []string {
 
 // queryMessages runs a bd list query with the given filter flag and value.
 func (m *Mailbox) queryMessages(beadsDir, filterFlag, filterValue, status string) ([]*Message, error) {
-	cmd := exec.Command("bd", "list",
+	cmd := exec.Command("bd", "--no-daemon", "list",
 		"--type", "message",
 		filterFlag, filterValue,
 		"--status", status,
