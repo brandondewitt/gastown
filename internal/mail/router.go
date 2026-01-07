@@ -447,7 +447,7 @@ func (r *Router) resolveAgentsByRig(rig string) ([]string, error) {
 // queryAgents queries agent beads using bd list with description filtering.
 func (r *Router) queryAgents(descContains string) ([]*agentBead, error) {
 	beadsDir := r.resolveBeadsDir("")
-	args := []string{"list", "--type=agent", "--json", "--limit=0"}
+	args := []string{"--no-daemon", "list", "--type=agent", "--json", "--limit=0"}
 
 	if descContains != "" {
 		args = append(args, "--desc-contains="+descContains)
@@ -598,7 +598,7 @@ func (r *Router) sendToSingle(msg *Message) error {
 	}
 
 	// Build command: bd create <subject> --type=message --assignee=<recipient> -d <body>
-	args := []string{"create", msg.Subject,
+	args := []string{"--no-daemon", "create", msg.Subject,
 		"--type", "message",
 		"--assignee", toIdentity,
 		"-d", msg.Body,
@@ -721,7 +721,7 @@ func (r *Router) sendToQueue(msg *Message) error {
 
 	// Build command: bd create <subject> --type=message --assignee=queue:<name> -d <body>
 	// Use queue:<name> as assignee so inbox queries can filter by queue
-	args := []string{"create", msg.Subject,
+	args := []string{"--no-daemon", "create", msg.Subject,
 		"--type", "message",
 		"--assignee", msg.To, // queue:name
 		"-d", msg.Body,
@@ -804,7 +804,7 @@ func (r *Router) sendToAnnounce(msg *Message) error {
 
 	// Build command: bd create <subject> --type=message --assignee=announce:<name> -d <body>
 	// Use announce:<name> as assignee so queries can filter by channel
-	args := []string{"create", msg.Subject,
+	args := []string{"--no-daemon", "create", msg.Subject,
 		"--type", "message",
 		"--assignee", msg.To, // announce:name
 		"-d", msg.Body,
@@ -860,7 +860,7 @@ func (r *Router) pruneAnnounce(announceName string, retainCount int) error {
 
 	// Query existing messages in this announce channel
 	// Use bd list with labels filter to find messages with announce:<name> label
-	args := []string{"list",
+	args := []string{"--no-daemon", "list",
 		"--type=message",
 		"--labels=announce:" + announceName,
 		"--json",
@@ -903,7 +903,7 @@ func (r *Router) pruneAnnounce(announceName string, retainCount int) error {
 
 	// Delete oldest messages
 	for i := 0; i < toDelete && i < len(messages); i++ {
-		deleteArgs := []string{"close", messages[i].ID, "--reason=retention pruning"}
+		deleteArgs := []string{"--no-daemon", "close", messages[i].ID, "--reason=retention pruning"}
 		deleteCmd := exec.Command("bd", deleteArgs...) //nolint:gosec // G204: args are constructed internally
 		deleteCmd.Env = append(deleteCmd.Environ(), "BEADS_DIR="+beadsDir)
 		deleteCmd.Dir = filepath.Dir(beadsDir)

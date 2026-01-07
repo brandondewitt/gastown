@@ -281,7 +281,7 @@ func (m *Mailbox) getBeads(id string) (*Message, error) {
 
 // getFromDir retrieves a message from a beads directory.
 func (m *Mailbox) getFromDir(id, beadsDir string) (*Message, error) {
-	cmd := exec.Command("bd", "show", id, "--json")
+	cmd := exec.Command("bd", "--no-daemon", "show", id, "--json")
 	cmd.Dir = m.workDir
 	cmd.Env = append(cmd.Environ(), "BEADS_DIR="+beadsDir)
 
@@ -341,7 +341,7 @@ func (m *Mailbox) markReadBeads(id string) error {
 
 // closeInDir closes a message in a specific beads directory.
 func (m *Mailbox) closeInDir(id, beadsDir string) error {
-	args := []string{"close", id}
+	args := []string{"--no-daemon", "close", id}
 	// Pass session ID for work attribution if available
 	if sessionID := os.Getenv("CLAUDE_SESSION_ID"); sessionID != "" {
 		args = append(args, "--session="+sessionID)
@@ -397,7 +397,7 @@ func (m *Mailbox) MarkUnread(id string) error {
 }
 
 func (m *Mailbox) markUnreadBeads(id string) error {
-	cmd := exec.Command("bd", "reopen", id)
+	cmd := exec.Command("bd", "--no-daemon", "reopen", id)
 	cmd.Dir = m.workDir
 	cmd.Env = append(cmd.Environ(), "BEADS_DIR="+m.beadsDir)
 
@@ -798,7 +798,7 @@ func (m *Mailbox) ListByThread(threadID string) ([]*Message, error) {
 
 func (m *Mailbox) listByThreadBeads(threadID string) ([]*Message, error) {
 	// bd message thread <thread-id> --json
-	cmd := exec.Command("bd", "message", "thread", threadID, "--json")
+	cmd := exec.Command("bd", "--no-daemon", "message", "thread", threadID, "--json")
 	cmd.Dir = m.workDir
 	cmd.Env = append(cmd.Environ(),
 		"BD_IDENTITY="+m.identity,
