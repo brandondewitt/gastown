@@ -52,7 +52,7 @@ func (h *ConvoysHandler) List(w http.ResponseWriter, r *http.Request) {
 	townBeads := filepath.Join(h.townRoot, ".beads")
 
 	// List all open convoy-type issues
-	listArgs := []string{"list", "--type=convoy", "--status=open", "--json"}
+	listArgs := []string{"--no-daemon", "list", "--type=convoy", "--status=open", "--json"}
 	listCmd := exec.Command("bd", listArgs...)
 	listCmd.Dir = townBeads
 
@@ -100,7 +100,7 @@ func (h *ConvoysHandler) Get(w http.ResponseWriter, r *http.Request) {
 	townBeads := filepath.Join(h.townRoot, ".beads")
 
 	// Get convoy details using bd show
-	showCmd := exec.Command("bd", "show", id, "--json")
+	showCmd := exec.Command("bd", "--no-daemon", "show", id, "--json")
 	showCmd.Dir = townBeads
 
 	var stdout bytes.Buffer
@@ -159,6 +159,7 @@ func (h *ConvoysHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// Create convoy using bd create command with type=convoy
 	// The name becomes the convoy title
 	createArgs := []string{
+		"--no-daemon",
 		"create",
 		"--type=convoy",
 		fmt.Sprintf("--title=%s", req.Name),
@@ -183,7 +184,7 @@ func (h *ConvoysHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	// Add tracking dependencies for each issue
 	for _, issueID := range req.IssueIDs {
-		depCmd := exec.Command("bd", "dep", "add", convoyID, issueID, "--tracks")
+		depCmd := exec.Command("bd", "--no-daemon", "dep", "add", convoyID, issueID, "--tracks")
 		depCmd.Dir = townBeads
 		if err := depCmd.Run(); err != nil {
 			// Log error but continue - convoy was created successfully

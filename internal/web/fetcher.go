@@ -33,7 +33,7 @@ func NewLiveConvoyFetcher() (*LiveConvoyFetcher, error) {
 // FetchConvoys fetches all open convoys with their activity data.
 func (f *LiveConvoyFetcher) FetchConvoys() ([]ConvoyRow, error) {
 	// List all open convoy-type issues
-	listArgs := []string{"list", "--type=convoy", "--status=open", "--json"}
+	listArgs := []string{"--no-daemon", "list", "--type=convoy", "--status=open", "--json"}
 	listCmd := exec.Command("bd", listArgs...)
 	listCmd.Dir = f.townBeads
 
@@ -197,7 +197,7 @@ func (f *LiveConvoyFetcher) getIssueDetailsBatch(issueIDs []string) map[string]*
 		return result
 	}
 
-	args := append([]string{"show"}, issueIDs...)
+	args := append([]string{"--no-daemon", "show"}, issueIDs...)
 	args = append(args, "--json")
 
 	showCmd := exec.Command("bd", args...)
