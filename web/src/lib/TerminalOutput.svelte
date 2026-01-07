@@ -17,12 +17,12 @@
       const res = await fetch(`/api/v1/agents/${agentAddress}/output`);
       const data = await res.json();
 
-      if (data.error) {
-        error = data.error;
+      if (data.data?.error) {
+        error = data.data.error;
         output = '';
       } else {
         error = null;
-        output = data.output || '';
+        output = data.data?.output || '';
 
         // Auto-scroll to bottom when new content arrives
         if (autoScroll && terminalEl) {
