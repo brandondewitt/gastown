@@ -52,8 +52,8 @@ func runCrewAt(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("getting crew worker: %w", err)
 	}
 
-	// Ensure crew workspace is on main branch (persistent roles should not use feature branches)
-	ensureMainBranch(worker.ClonePath, fmt.Sprintf("Crew workspace %s/%s", r.Name, name))
+	// Ensure crew workspace is on default branch (persistent roles should not use feature branches)
+	ensureDefaultBranch(worker.ClonePath, fmt.Sprintf("Crew workspace %s/%s", r.Name, name), r.Path)
 
 	// If --no-tmux, just print the path
 	if crewNoTmux {
@@ -89,9 +89,9 @@ func runCrewAt(cmd *cobra.Command, args []string) error {
 	if !hasSession {
 		existingSessions, err := t.FindSessionByWorkDir(worker.ClonePath, true)
 		if err == nil && len(existingSessions) > 0 {
-			// Found an existing session with Claude running in this directory
+			// Found an existing session with an agent running in this directory
 			existingSession := existingSessions[0]
-			fmt.Printf("%s Found existing Claude session '%s' in crew directory\n",
+			fmt.Printf("%s Found existing agent session '%s' in crew directory\n",
 				style.Warning.Render("⚠"),
 				existingSession)
 			fmt.Printf("  Attaching to existing session instead of creating a new one\n")
@@ -150,8 +150,11 @@ func runCrewAt(cmd *cobra.Command, args []string) error {
 		// This gives cleaner lifecycle: Claude exits → session ends (no intermediate shell)
 		// Pass "gt prime" as initial prompt so Claude loads context immediately
 		// Export GT_ROLE and BD_ACTOR since tmux SetEnvironment only affects new panes
-		claudeCmd := config.BuildCrewStartupCommand(r.Name, name, r.Path, "gt prime")
-		if err := t.RespawnPane(paneID, claudeCmd); err != nil {
+		startupCmd, err := config.BuildCrewStartupCommandWithAgentOverride(r.Name, name, r.Path, "gt prime", crewAgentOverride)
+		if err != nil {
+			return fmt.Errorf("building startup command: %w", err)
+		}
+		if err := t.RespawnPane(paneID, startupCmd); err != nil {
 			return fmt.Errorf("starting claude: %w", err)
 		}
 
@@ -161,7 +164,11 @@ func runCrewAt(cmd *cobra.Command, args []string) error {
 		// Session exists - check if Claude is still running
 		// Uses both pane command check and UI marker detection to avoid
 		// restarting when user is in a subshell spawned from Claude
-		if !t.IsClaudeRunning(sessionID) {
+		agentCfg, _, err := config.ResolveAgentConfigWithOverride(townRoot, r.Path, crewAgentOverride)
+		if err != nil {
+			return fmt.Errorf("resolving agent: %w", err)
+		}
+		if !t.IsAgentRunning(sessionID, config.ExpectedPaneCommands(agentCfg)...) {
 			// Claude has exited, restart it using respawn-pane
 			fmt.Printf("Claude exited, restarting...\n")
 
@@ -174,8 +181,11 @@ func runCrewAt(cmd *cobra.Command, args []string) error {
 			// Use respawn-pane to replace shell with Claude directly
 			// Pass "gt prime" as initial prompt so Claude loads context immediately
 			// Export GT_ROLE and BD_ACTOR since tmux SetEnvironment only affects new panes
-			claudeCmd := config.BuildCrewStartupCommand(r.Name, name, r.Path, "gt prime")
-			if err := t.RespawnPane(paneID, claudeCmd); err != nil {
+			startupCmd, err := config.BuildCrewStartupCommandWithAgentOverride(r.Name, name, r.Path, "gt prime", crewAgentOverride)
+			if err != nil {
+				return fmt.Errorf("building startup command: %w", err)
+			}
+			if err := t.RespawnPane(paneID, startupCmd); err != nil {
 				return fmt.Errorf("restarting claude: %w", err)
 			}
 		}
@@ -183,10 +193,14 @@ func runCrewAt(cmd *cobra.Command, args []string) error {
 
 	// Check if we're already in the target session
 	if isInTmuxSession(sessionID) {
-		// We're in the session at a shell prompt - just start Claude directly
-		// Pass "gt prime" as initial prompt so Claude loads context immediately
-		fmt.Printf("Starting Claude in current session...\n")
-		return execClaude("gt prime")
+		// We're in the session at a shell prompt - just start the agent directly
+		// Pass "gt prime" as initial prompt so it loads context immediately
+		agentCfg, _, err := config.ResolveAgentConfigWithOverride(townRoot, r.Path, crewAgentOverride)
+		if err != nil {
+			return fmt.Errorf("resolving agent: %w", err)
+		}
+		fmt.Printf("Starting %s in current session...\n", agentCfg.Command)
+		return execAgent(agentCfg, "gt prime")
 	}
 
 	// If inside tmux (but different session), don't switch - just inform user

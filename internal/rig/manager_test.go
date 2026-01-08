@@ -40,18 +40,12 @@ func createTestRig(t *testing.T, root, name string) {
 		t.Fatalf("mkdir rig: %v", err)
 	}
 
-	// Create agent dirs
+	// Create agent dirs (witness, refinery, mayor)
 	for _, dir := range AgentDirs {
 		dirPath := filepath.Join(rigPath, dir)
 		if err := os.MkdirAll(dirPath, 0755); err != nil {
 			t.Fatalf("mkdir %s: %v", dir, err)
 		}
-	}
-
-	// Create witness state.json (witnesses don't have clones, just state)
-	witnessState := filepath.Join(rigPath, "witness", "state.json")
-	if err := os.WriteFile(witnessState, []byte(`{"role":"witness"}`), 0644); err != nil {
-		t.Fatalf("write witness state: %v", err)
 	}
 
 	// Create some polecats
@@ -387,7 +381,7 @@ esac
 	t.Setenv("BEADS_DIR", "") // Clear any existing BEADS_DIR
 
 	manager := &Manager{townRoot: townRoot}
-	if err := manager.initAgentBeads(rigPath, "demo", "gt", false); err != nil {
+	if err := manager.initAgentBeads(rigPath, "demo", "gt"); err != nil {
 		t.Fatalf("initAgentBeads: %v", err)
 	}
 
@@ -414,5 +408,72 @@ esac
 		if !found {
 			t.Errorf("expected agent %s was not created", id)
 		}
+	}
+}
+
+func TestIsValidBeadsPrefix(t *testing.T) {
+	tests := []struct {
+		prefix string
+		want   bool
+	}{
+		// Valid prefixes
+		{"gt", true},
+		{"bd", true},
+		{"hq", true},
+		{"gastown", true},
+		{"myProject", true},
+		{"my-project", true},
+		{"a", true},
+		{"A", true},
+		{"test123", true},
+		{"a1b2c3", true},
+		{"a-b-c", true},
+
+		// Invalid prefixes
+		{"", false},                    // empty
+		{"1abc", false},                // starts with number
+		{"-abc", false},                // starts with hyphen
+		{"abc def", false},             // contains space
+		{"abc;ls", false},              // shell injection attempt
+		{"$(whoami)", false},           // command substitution
+		{"`id`", false},                // backtick command
+		{"abc|cat", false},             // pipe
+		{"../etc/passwd", false},       // path traversal
+		{"aaaaaaaaaaaaaaaaaaaaa", false}, // too long (21 chars, >20 limit)
+		{"valid-but-with-$var", false}, // variable reference
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.prefix, func(t *testing.T) {
+			got := isValidBeadsPrefix(tt.prefix)
+			if got != tt.want {
+				t.Errorf("isValidBeadsPrefix(%q) = %v, want %v", tt.prefix, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestInitBeadsRejectsInvalidPrefix(t *testing.T) {
+	rigPath := t.TempDir()
+	manager := &Manager{}
+
+	tests := []string{
+		"",
+		"$(whoami)",
+		"abc;rm -rf /",
+		"../etc",
+		"123",
+	}
+
+	for _, prefix := range tests {
+		t.Run(prefix, func(t *testing.T) {
+			err := manager.initBeads(rigPath, prefix)
+			if err == nil {
+				t.Errorf("initBeads(%q) should have failed", prefix)
+			}
+			if !strings.Contains(err.Error(), "invalid beads prefix") {
+				t.Errorf("initBeads(%q) error = %q, want error containing 'invalid beads prefix'", prefix, err.Error())
+			}
+		})
 	}
 }

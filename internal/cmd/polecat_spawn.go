@@ -12,7 +12,6 @@ import (
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/polecat"
 	"github.com/steveyegge/gastown/internal/rig"
-	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/style"
 	"github.com/steveyegge/gastown/internal/tmux"
 	"github.com/steveyegge/gastown/internal/workspace"
@@ -39,6 +38,7 @@ type SlingSpawnOptions struct {
 	Account  string // Claude Code account handle to use
 	Create   bool   // Create polecat if it doesn't exist (currently always true for sling)
 	HookBead string // Bead ID to set as hook_bead at spawn time (atomic assignment)
+	Agent    string // Agent override for this spawn (e.g., "gemini", "codex", "claude-haiku")
 }
 
 // SpawnPolecatForSling creates a fresh polecat and optionally starts its session.
@@ -76,7 +76,7 @@ func SpawnPolecatForSling(rigName string, opts SlingSpawnOptions) (*SpawnedPolec
 	}
 	fmt.Printf("Allocated polecat: %s\n", polecatName)
 
-	// Check if polecat already exists (shouldn't, since we allocated fresh)
+	// Check if polecat already exists (shouldn't happen - indicates stale state needing repair)
 	existingPolecat, err := polecatMgr.Get(polecatName)
 
 	// Build add options with hook_bead set atomically at spawn time
@@ -85,7 +85,7 @@ func SpawnPolecatForSling(rigName string, opts SlingSpawnOptions) (*SpawnedPolec
 	}
 
 	if err == nil {
-		// Exists - recreate with fresh worktree
+		// Stale state: polecat exists despite fresh name allocation - repair it
 		// Check for uncommitted work first
 		if !opts.Force {
 			pGit := git.NewGit(existingPolecat.ClonePath)
@@ -95,9 +95,9 @@ func SpawnPolecatForSling(rigName string, opts SlingSpawnOptions) (*SpawnedPolec
 					polecatName, workStatus.String())
 			}
 		}
-		fmt.Printf("Recreating polecat %s with fresh worktree...\n", polecatName)
-		if _, err = polecatMgr.RecreateWithOptions(polecatName, opts.Force, addOpts); err != nil {
-			return nil, fmt.Errorf("recreating polecat: %w", err)
+		fmt.Printf("Repairing stale polecat %s with fresh worktree...\n", polecatName)
+		if _, err = polecatMgr.RepairWorktreeWithOptions(polecatName, opts.Force, addOpts); err != nil {
+			return nil, fmt.Errorf("repairing stale polecat: %w", err)
 		}
 	} else if err == polecat.ErrPolecatNotFound {
 		// Create new polecat
@@ -122,7 +122,12 @@ func SpawnPolecatForSling(rigName string, opts SlingSpawnOptions) (*SpawnedPolec
 		fmt.Printf("Polecat created. Agent must be started manually.\n\n")
 		fmt.Printf("To start the agent:\n")
 		fmt.Printf("  cd %s\n", polecatObj.ClonePath)
-		fmt.Printf("  claude --dangerously-skip-permissions\n\n")
+		// Use rig's configured agent command, unless overridden.
+		agentCmd, err := config.GetRuntimeCommandWithAgentOverride(r.Path, opts.Agent)
+		if err != nil {
+			return nil, err
+		}
+		fmt.Printf("  %s\n\n", agentCmd)
 		fmt.Printf("Agent will discover work via gt prime on startup.\n")
 
 		return &SpawnedPolecatInfo{
@@ -146,22 +151,29 @@ func SpawnPolecatForSling(rigName string, opts SlingSpawnOptions) (*SpawnedPolec
 
 	// Start session
 	t := tmux.NewTmux()
-	sessMgr := session.NewManager(t, r)
+	polecatSessMgr := polecat.NewSessionManager(t, r)
 
 	// Check if already running
-	running, _ := sessMgr.IsRunning(polecatName)
+	running, _ := polecatSessMgr.IsRunning(polecatName)
 	if !running {
 		fmt.Printf("Starting session for %s/%s...\n", rigName, polecatName)
-		startOpts := session.StartOptions{
+		startOpts := polecat.SessionStartOptions{
 			ClaudeConfigDir: claudeConfigDir,
 		}
-		if err := sessMgr.Start(polecatName, startOpts); err != nil {
+		if opts.Agent != "" {
+			cmd, err := config.BuildPolecatStartupCommandWithAgentOverride(rigName, polecatName, r.Path, "", opts.Agent)
+			if err != nil {
+				return nil, err
+			}
+			startOpts.Command = cmd
+		}
+		if err := polecatSessMgr.Start(polecatName, startOpts); err != nil {
 			return nil, fmt.Errorf("starting session: %w", err)
 		}
 	}
 
 	// Get session name and pane
-	sessionName := sessMgr.SessionName(polecatName)
+	sessionName := polecatSessMgr.SessionName(polecatName)
 	pane, err := getSessionPane(sessionName)
 	if err != nil {
 		return nil, fmt.Errorf("getting pane for %s: %w", sessionName, err)

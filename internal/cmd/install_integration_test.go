@@ -61,25 +61,18 @@ func TestInstallCreatesCorrectStructure(t *testing.T) {
 		t.Errorf("rigs.json should be empty, got %d rigs", len(rigsConfig.Rigs))
 	}
 
-	// Verify mayor/state.json
-	statePath := filepath.Join(hqPath, "mayor", "state.json")
-	assertFileExists(t, statePath, "mayor/state.json")
+	// Verify CLAUDE.md exists in mayor/ (not town root, to avoid inheritance pollution)
+	claudePath := filepath.Join(hqPath, "mayor", "CLAUDE.md")
+	assertFileExists(t, claudePath, "mayor/CLAUDE.md")
 
-	stateData, err := os.ReadFile(statePath)
-	if err != nil {
-		t.Fatalf("failed to read state.json: %v", err)
-	}
-	var state map[string]interface{}
-	if err := json.Unmarshal(stateData, &state); err != nil {
-		t.Fatalf("failed to parse state.json: %v", err)
-	}
-	if state["role"] != "mayor" {
-		t.Errorf("state.json role = %q, want %q", state["role"], "mayor")
-	}
+	// Verify Claude settings exist in mayor/.claude/ (not town root/.claude/)
+	// Mayor settings go here to avoid polluting child workspaces via directory traversal
+	mayorSettingsPath := filepath.Join(hqPath, "mayor", ".claude", "settings.json")
+	assertFileExists(t, mayorSettingsPath, "mayor/.claude/settings.json")
 
-	// Verify CLAUDE.md exists
-	claudePath := filepath.Join(hqPath, "CLAUDE.md")
-	assertFileExists(t, claudePath, "CLAUDE.md")
+	// Verify deacon settings exist in deacon/.claude/
+	deaconSettingsPath := filepath.Join(hqPath, "deacon", ".claude", "settings.json")
+	assertFileExists(t, deaconSettingsPath, "deacon/.claude/settings.json")
 }
 
 // TestInstallBeadsHasCorrectPrefix validates that beads is initialized
@@ -127,6 +120,31 @@ func TestInstallBeadsHasCorrectPrefix(t *testing.T) {
 	if prefix != "hq" {
 		t.Errorf("beads issue_prefix = %q, want %q", prefix, "hq")
 	}
+}
+
+// TestInstallTownRoleSlots validates that town-level agent beads
+// have their role slot set after install.
+func TestInstallTownRoleSlots(t *testing.T) {
+	// Skip if bd is not available
+	if _, err := exec.LookPath("bd"); err != nil {
+		t.Skip("bd not installed, skipping role slot test")
+	}
+
+	tmpDir := t.TempDir()
+	hqPath := filepath.Join(tmpDir, "test-hq")
+
+	gtBinary := buildGT(t)
+
+	// Run gt install (includes beads init by default)
+	cmd := exec.Command(gtBinary, "install", hqPath)
+	cmd.Env = append(os.Environ(), "HOME="+tmpDir)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("gt install failed: %v\nOutput: %s", err, output)
+	}
+
+	assertSlotValue(t, hqPath, "hq-mayor", "role", "hq-mayor-role")
+	assertSlotValue(t, hqPath, "hq-deacon", "role", "hq-deacon-role")
 }
 
 // TestInstallIdempotent validates that running gt install twice
@@ -310,5 +328,33 @@ func assertFileExists(t *testing.T, path, name string) {
 	}
 	if info.IsDir() {
 		t.Errorf("%s is a directory, expected file", name)
+	}
+}
+
+func assertSlotValue(t *testing.T, townRoot, issueID, slot, want string) {
+	t.Helper()
+	cmd := exec.Command("bd", "--no-daemon", "--json", "slot", "show", issueID)
+	cmd.Dir = townRoot
+	output, err := cmd.Output()
+	if err != nil {
+		debugCmd := exec.Command("bd", "--no-daemon", "--json", "slot", "show", issueID)
+		debugCmd.Dir = townRoot
+		combined, _ := debugCmd.CombinedOutput()
+		t.Fatalf("bd slot show %s failed: %v\nOutput: %s", issueID, err, combined)
+	}
+
+	var parsed struct {
+		Slots map[string]*string `json:"slots"`
+	}
+	if err := json.Unmarshal(output, &parsed); err != nil {
+		t.Fatalf("parsing slot show output failed: %v\nOutput: %s", err, output)
+	}
+
+	var got string
+	if value, ok := parsed.Slots[slot]; ok && value != nil {
+		got = *value
+	}
+	if got != want {
+		t.Fatalf("slot %s for %s = %q, want %q", slot, issueID, got, want)
 	}
 }

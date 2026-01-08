@@ -28,10 +28,99 @@ type MayorConfig struct {
 	DefaultCrewName string           `json:"default_crew_name,omitempty"` // default crew name for new rigs
 }
 
+// CurrentTownSettingsVersion is the current schema version for TownSettings.
+const CurrentTownSettingsVersion = 1
+
+// TownSettings represents town-level behavioral configuration (settings/config.json).
+// This contains agent configuration that applies to all rigs unless overridden.
+type TownSettings struct {
+	Type    string `json:"type"`    // "town-settings"
+	Version int    `json:"version"` // schema version
+
+	// DefaultAgent is the name of the agent preset to use by default.
+	// Can be a built-in preset ("claude", "gemini", "codex")
+	// or a custom agent name defined in settings/agents.json.
+	// Default: "claude"
+	DefaultAgent string `json:"default_agent,omitempty"`
+
+	// Agents defines custom agent configurations or overrides.
+	// Keys are agent names that can be referenced by DefaultAgent or rig settings.
+	// Values override or extend the built-in presets.
+	// Example: {"gemini": {"command": "/custom/path/to/gemini"}}
+	Agents map[string]*RuntimeConfig `json:"agents,omitempty"`
+}
+
+// NewTownSettings creates a new TownSettings with defaults.
+func NewTownSettings() *TownSettings {
+	return &TownSettings{
+		Type:         "town-settings",
+		Version:      CurrentTownSettingsVersion,
+		DefaultAgent: "claude",
+		Agents:       make(map[string]*RuntimeConfig),
+	}
+}
+
 // DaemonConfig represents daemon process settings.
 type DaemonConfig struct {
 	HeartbeatInterval string `json:"heartbeat_interval,omitempty"` // e.g., "30s"
 	PollInterval      string `json:"poll_interval,omitempty"`      // e.g., "10s"
+}
+
+// DaemonPatrolConfig represents the daemon patrol configuration (mayor/daemon.json).
+// This configures how patrols are triggered and managed.
+type DaemonPatrolConfig struct {
+	Type      string                  `json:"type"`                // "daemon-patrol-config"
+	Version   int                     `json:"version"`             // schema version
+	Heartbeat *HeartbeatConfig        `json:"heartbeat,omitempty"` // heartbeat settings
+	Patrols   map[string]PatrolConfig `json:"patrols,omitempty"`   // named patrol configurations
+}
+
+// HeartbeatConfig represents heartbeat settings for daemon.
+type HeartbeatConfig struct {
+	Enabled  bool   `json:"enabled"`            // whether heartbeat is enabled
+	Interval string `json:"interval,omitempty"` // e.g., "3m"
+}
+
+// PatrolConfig represents a single patrol configuration.
+type PatrolConfig struct {
+	Enabled  bool   `json:"enabled"`            // whether this patrol is enabled
+	Interval string `json:"interval,omitempty"` // e.g., "5m"
+	Agent    string `json:"agent,omitempty"`    // agent that runs this patrol
+}
+
+// CurrentDaemonPatrolConfigVersion is the current schema version for DaemonPatrolConfig.
+const CurrentDaemonPatrolConfigVersion = 1
+
+// DaemonPatrolConfigFileName is the filename for daemon patrol configuration.
+const DaemonPatrolConfigFileName = "daemon.json"
+
+// NewDaemonPatrolConfig creates a new DaemonPatrolConfig with sensible defaults.
+func NewDaemonPatrolConfig() *DaemonPatrolConfig {
+	return &DaemonPatrolConfig{
+		Type:    "daemon-patrol-config",
+		Version: CurrentDaemonPatrolConfigVersion,
+		Heartbeat: &HeartbeatConfig{
+			Enabled:  true,
+			Interval: "3m",
+		},
+		Patrols: map[string]PatrolConfig{
+			"deacon": {
+				Enabled:  true,
+				Interval: "5m",
+				Agent:    "deacon",
+			},
+			"witness": {
+				Enabled:  true,
+				Interval: "5m",
+				Agent:    "witness",
+			},
+			"refinery": {
+				Enabled:  true,
+				Interval: "5m",
+				Agent:    "refinery",
+			},
+		},
+	}
 }
 
 // DeaconConfig represents deacon process settings.
@@ -65,14 +154,6 @@ type BeadsConfig struct {
 	Prefix string `json:"prefix"` // issue prefix
 }
 
-// AgentState represents an agent's current state (*/state.json).
-type AgentState struct {
-	Role       string         `json:"role"`              // "mayor", "witness", etc.
-	LastActive time.Time      `json:"last_active"`
-	Session    string         `json:"session,omitempty"`
-	Extra      map[string]any `json:"extra,omitempty"`
-}
-
 // CurrentTownVersion is the current schema version for TownConfig.
 // Version 2: Added Owner and PublicName fields for federation identity.
 const CurrentTownVersion = 2
@@ -89,10 +170,10 @@ const CurrentRigSettingsVersion = 1
 // RigConfig represents per-rig identity (rig/config.json).
 // This contains only identity - behavioral config is in settings/config.json.
 type RigConfig struct {
-	Type      string       `json:"type"`       // "rig"
-	Version   int          `json:"version"`    // schema version
-	Name      string       `json:"name"`       // rig name
-	GitURL    string       `json:"git_url"`    // git repository URL
+	Type      string       `json:"type"`    // "rig"
+	Version   int          `json:"version"` // schema version
+	Name      string       `json:"name"`    // rig name
+	GitURL    string       `json:"git_url"` // git repository URL
 	LocalRepo string       `json:"local_repo,omitempty"`
 	CreatedAt time.Time    `json:"created_at"` // when the rig was created
 	Beads     *BeadsConfig `json:"beads,omitempty"`
@@ -106,7 +187,14 @@ type RigSettings struct {
 	Theme      *ThemeConfig      `json:"theme,omitempty"`       // tmux theme settings
 	Namepool   *NamepoolConfig   `json:"namepool,omitempty"`    // polecat name pool settings
 	Crew       *CrewConfig       `json:"crew,omitempty"`        // crew startup settings
-	Runtime    *RuntimeConfig    `json:"runtime,omitempty"`     // LLM runtime settings
+	Runtime    *RuntimeConfig    `json:"runtime,omitempty"`     // LLM runtime settings (deprecated: use Agent)
+
+	// Agent selects which agent preset to use for this rig.
+	// Can be a built-in preset ("claude", "gemini", "codex")
+	// or a custom agent defined in settings/agents.json.
+	// If empty, uses the town's default_agent setting.
+	// Takes precedence over Runtime if both are set.
+	Agent string `json:"agent,omitempty"`
 }
 
 // CrewConfig represents crew workspace settings for a rig.
@@ -233,8 +321,8 @@ type TownThemeConfig struct {
 // These are used when no explicit configuration is provided.
 func BuiltinRoleThemes() map[string]string {
 	return map[string]string{
-		"witness":  "rust",  // Red/rust - watchful, alert
-		"refinery": "plum",  // Purple - processing, refining
+		"witness":  "rust", // Red/rust - watchful, alert
+		"refinery": "plum", // Purple - processing, refining
 		// crew and polecat use rig theme by default (no override)
 	}
 }

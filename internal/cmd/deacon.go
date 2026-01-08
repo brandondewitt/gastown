@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/beads"
+	"github.com/steveyegge/gastown/internal/claude"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/deacon"
@@ -87,6 +88,8 @@ var deaconRestartCmd = &cobra.Command{
 Stops the current session (if running) and starts a fresh one.`,
 	RunE: runDeaconRestart,
 }
+
+var deaconAgentOverride string
 
 var deaconHeartbeatCmd = &cobra.Command{
 	Use:   "heartbeat [action]",
@@ -186,32 +189,20 @@ This helps the Deacon understand which agents may need attention.`,
 	RunE: runDeaconHealthState,
 }
 
-var deaconZombieScanCmd = &cobra.Command{
-	Use:   "zombie-scan [rig]",
-	Short: "Scan for idle polecats that should have been nuked",
-	Long: `Backup check for polecats the Witness should have cleaned up.
+var deaconStaleHooksCmd = &cobra.Command{
+	Use:   "stale-hooks",
+	Short: "Find and unhook stale hooked beads",
+	Long: `Find beads stuck in 'hooked' status and unhook them if the agent is gone.
 
-Scans for "zombie" polecats that meet ALL of these criteria:
-- State: idle or done (no active work)
-- Session: not running (tmux session dead)
-- No hooked work
-- Last activity: older than threshold (default 10 minutes)
-
-These are polecats that the Witness should have nuked but didn't.
-This provides defense-in-depth against Witness failures.
-
-Actions:
-1. Log warning about witness failure
-2. Nuke the zombie polecat directly
-3. Notify mayor of witness issue (optional)
+Beads can get stuck in 'hooked' status when agents die or abandon work.
+This command finds hooked beads older than the threshold (default: 1 hour),
+checks if the assignee agent is still alive, and unhooks them if not.
 
 Examples:
-  gt deacon zombie-scan                    # Scan all rigs
-  gt deacon zombie-scan gastown            # Scan specific rig
-  gt deacon zombie-scan --dry-run          # Preview only
-  gt deacon zombie-scan --threshold=5m     # Custom staleness threshold`,
-	Args: cobra.MaximumNArgs(1),
-	RunE: runDeaconZombieScan,
+  gt deacon stale-hooks                 # Find and unhook stale beads
+  gt deacon stale-hooks --dry-run       # Preview what would be unhooked
+  gt deacon stale-hooks --max-age=30m   # Use 30 minute threshold`,
+	RunE: runDeaconStaleHooks,
 }
 
 var (
@@ -226,10 +217,9 @@ var (
 	forceKillReason     string
 	forceKillSkipNotify bool
 
-	// Zombie scan flags
-	zombieScanDryRun    bool
-	zombieScanThreshold time.Duration
-	zombieScanNuke      bool
+	// Stale hooks flags
+	staleHooksMaxAge time.Duration
+	staleHooksDryRun bool
 )
 
 func init() {
@@ -243,7 +233,7 @@ func init() {
 	deaconCmd.AddCommand(deaconHealthCheckCmd)
 	deaconCmd.AddCommand(deaconForceKillCmd)
 	deaconCmd.AddCommand(deaconHealthStateCmd)
-	deaconCmd.AddCommand(deaconZombieScanCmd)
+	deaconCmd.AddCommand(deaconStaleHooksCmd)
 
 	// Flags for trigger-pending
 	deaconTriggerPendingCmd.Flags().DurationVar(&triggerTimeout, "timeout", 2*time.Second,
@@ -263,13 +253,15 @@ func init() {
 	deaconForceKillCmd.Flags().BoolVar(&forceKillSkipNotify, "skip-notify", false,
 		"Skip sending notification mail to mayor")
 
-	// Flags for zombie-scan
-	deaconZombieScanCmd.Flags().BoolVarP(&zombieScanDryRun, "dry-run", "n", false,
-		"Show what would be done without nuking")
-	deaconZombieScanCmd.Flags().DurationVar(&zombieScanThreshold, "threshold", 10*time.Minute,
-		"Staleness threshold for zombie detection")
-	deaconZombieScanCmd.Flags().BoolVar(&zombieScanNuke, "nuke", true,
-		"Nuke detected zombies (use --nuke=false to report only)")
+	// Flags for stale-hooks
+	deaconStaleHooksCmd.Flags().DurationVar(&staleHooksMaxAge, "max-age", 1*time.Hour,
+		"Maximum age before a hooked bead is considered stale")
+	deaconStaleHooksCmd.Flags().BoolVar(&staleHooksDryRun, "dry-run", false,
+		"Preview what would be unhooked without making changes")
+
+	deaconStartCmd.Flags().StringVar(&deaconAgentOverride, "agent", "", "Agent alias to run the Deacon with (overrides town default)")
+	deaconAttachCmd.Flags().StringVar(&deaconAgentOverride, "agent", "", "Agent alias to run the Deacon with (overrides town default)")
+	deaconRestartCmd.Flags().StringVar(&deaconAgentOverride, "agent", "", "Agent alias to run the Deacon with (overrides town default)")
 
 	rootCmd.AddCommand(deaconCmd)
 }
@@ -288,7 +280,7 @@ func runDeaconStart(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("Deacon session already running. Attach with: gt deacon attach")
 	}
 
-	if err := startDeaconSession(t, sessionName); err != nil {
+	if err := startDeaconSession(t, sessionName, deaconAgentOverride); err != nil {
 		return err
 	}
 
@@ -300,7 +292,7 @@ func runDeaconStart(cmd *cobra.Command, args []string) error {
 }
 
 // startDeaconSession creates and initializes the Deacon tmux session.
-func startDeaconSession(t *tmux.Tmux, sessionName string) error {
+func startDeaconSession(t *tmux.Tmux, sessionName, agentOverride string) error {
 	// Find workspace root
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
@@ -315,9 +307,9 @@ func startDeaconSession(t *tmux.Tmux, sessionName string) error {
 		return fmt.Errorf("creating deacon directory: %w", err)
 	}
 
-	// Ensure deacon has patrol hooks (idempotent)
-	if err := ensurePatrolHooks(deaconDir); err != nil {
-		style.PrintWarning("Could not create deacon hooks: %v", err)
+	// Ensure Claude settings exist (autonomous role needs mail in SessionStart)
+	if err := claude.EnsureSettingsForRole(deaconDir, "deacon"); err != nil {
+		style.PrintWarning("Could not create deacon settings: %v", err)
 	}
 
 	// Create session in deacon directory
@@ -339,7 +331,11 @@ func startDeaconSession(t *tmux.Tmux, sessionName string) error {
 	// Restarts are handled by daemon via ensureDeaconRunning on each heartbeat
 	// The startup hook handles context loading automatically
 	// Export GT_ROLE and BD_ACTOR in the command since tmux SetEnvironment only affects new panes
-	if err := t.SendKeys(sessionName, config.BuildAgentStartupCommand("deacon", "deacon", "", "")); err != nil {
+	startupCmd, err := config.BuildAgentStartupCommandWithAgentOverride("deacon", "deacon", "", "", agentOverride)
+	if err != nil {
+		return fmt.Errorf("building startup command: %w", err)
+	}
+	if err := t.SendKeys(sessionName, startupCmd); err != nil {
 		return fmt.Errorf("sending command: %w", err)
 	}
 
@@ -407,7 +403,7 @@ func runDeaconAttach(cmd *cobra.Command, args []string) error {
 	if !running {
 		// Auto-start if not running
 		fmt.Println("Deacon session not running, starting...")
-		if err := startDeaconSession(t, sessionName); err != nil {
+		if err := startDeaconSession(t, sessionName, deaconAgentOverride); err != nil {
 			return err
 		}
 	}
@@ -565,64 +561,6 @@ func runDeaconTriggerPending(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
-}
-
-// ensurePatrolHooks creates .claude/settings.json with hooks for patrol roles.
-// This is idempotent - if hooks already exist, it does nothing.
-func ensurePatrolHooks(workspacePath string) error {
-	settingsPath := filepath.Join(workspacePath, ".claude", "settings.json")
-
-	// Check if already exists
-	if _, err := os.Stat(settingsPath); err == nil {
-		return nil // Already exists
-	}
-
-	claudeDir := filepath.Join(workspacePath, ".claude")
-	if err := os.MkdirAll(claudeDir, 0755); err != nil {
-		return fmt.Errorf("creating .claude dir: %w", err)
-	}
-
-	// Standard patrol hooks
-	// Note: SessionStart nudges Deacon for GUPP backstop (agent wake notification)
-	hooksJSON := `{
-  "hooks": {
-    "SessionStart": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "gt prime && gt mail check --inject && gt nudge deacon session-started"
-          }
-        ]
-      }
-    ],
-    "PreCompact": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "gt prime"
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "gt mail check --inject"
-          }
-        ]
-      }
-    ]
-  }
-}
-`
-	return os.WriteFile(settingsPath, []byte(hooksJSON), 0600)
 }
 
 // runDeaconHealthCheck implements the health-check command.
@@ -865,258 +803,6 @@ func runDeaconHealthState(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// runDeaconZombieScan scans for idle polecats that should have been nuked by the Witness.
-// This is a defense-in-depth backup check.
-func runDeaconZombieScan(cmd *cobra.Command, args []string) error {
-	townRoot, err := workspace.FindFromCwdOrError()
-	if err != nil {
-		return fmt.Errorf("not in a Gas Town workspace: %w", err)
-	}
-
-	t := tmux.NewTmux()
-
-	// Get list of rigs to scan
-	var rigsToScan []string
-	if len(args) > 0 {
-		rigsToScan = []string{args[0]}
-	} else {
-		// Scan all rigs by finding directories with polecats/ subdirectories
-		entries, err := os.ReadDir(townRoot)
-		if err != nil {
-			return fmt.Errorf("reading town root: %w", err)
-		}
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
-			// Skip non-rig directories
-			if entry.Name() == "deacon" || entry.Name() == "mayor" ||
-				entry.Name() == "plugins" || entry.Name() == "docs" ||
-				strings.HasPrefix(entry.Name(), ".") {
-				continue
-			}
-			// Check if it has a polecats directory
-			polecatsDir := filepath.Join(townRoot, entry.Name(), "polecats")
-			if info, err := os.Stat(polecatsDir); err == nil && info.IsDir() {
-				rigsToScan = append(rigsToScan, entry.Name())
-			}
-		}
-	}
-
-	if len(rigsToScan) == 0 {
-		fmt.Printf("%s No rigs found to scan\n", style.Dim.Render("○"))
-		return nil
-	}
-
-	fmt.Printf("%s Scanning for zombie polecats (threshold: %s)...\n",
-		style.Bold.Render("🧟"), zombieScanThreshold)
-
-	var zombies []zombieInfo
-	for _, rigName := range rigsToScan {
-		rigZombies, err := scanRigForZombies(townRoot, rigName, t)
-		if err != nil {
-			style.PrintWarning("failed to scan rig %s: %v", rigName, err)
-			continue
-		}
-		zombies = append(zombies, rigZombies...)
-	}
-
-	if len(zombies) == 0 {
-		fmt.Printf("%s No zombies found (all polecats healthy)\n", style.Bold.Render("✓"))
-		return nil
-	}
-
-	// Report zombies
-	fmt.Printf("\n%s Found %d zombie(s):\n\n", style.Bold.Render("⚠"), len(zombies))
-	for _, z := range zombies {
-		fmt.Printf("  %s %s/%s\n", style.Dim.Render("🧟"), z.rig, z.name)
-		fmt.Printf("    State: %s, Session: %s\n", z.state, z.sessionStatus)
-		fmt.Printf("    Hooked work: %s\n", z.hookedWork)
-		fmt.Printf("    Last activity: %s ago\n", z.staleness.Round(time.Second))
-		fmt.Printf("    Reason: %s\n", z.reason)
-		fmt.Println()
-	}
-
-	// Nuke zombies if enabled
-	if zombieScanNuke && !zombieScanDryRun {
-		fmt.Printf("%s Nuking zombies...\n", style.Bold.Render("💀"))
-		for _, z := range zombies {
-			if err := nukeZombie(townRoot, z, t); err != nil {
-				style.PrintWarning("failed to nuke %s/%s: %v", z.rig, z.name, err)
-			} else {
-				fmt.Printf("  %s Nuked %s/%s\n", style.Bold.Render("✓"), z.rig, z.name)
-			}
-		}
-
-		// Notify mayor about witness failure
-		notifyMayorOfWitnessFailure(townRoot, zombies)
-	} else if zombieScanDryRun {
-		fmt.Printf("%s Dry run - would nuke %d zombie(s)\n", style.Dim.Render("ℹ"), len(zombies))
-	}
-
-	return nil
-}
-
-// zombieInfo holds information about a detected zombie polecat.
-type zombieInfo struct {
-	rig           string
-	name          string
-	state         string
-	sessionStatus string
-	hookedWork    string
-	staleness     time.Duration
-	reason        string
-	sessionName   string
-}
-
-// scanRigForZombies scans a rig for zombie polecats.
-func scanRigForZombies(townRoot, rigName string, t *tmux.Tmux) ([]zombieInfo, error) {
-	rigPath := filepath.Join(townRoot, rigName)
-	polecatsDir := filepath.Join(rigPath, "polecats")
-
-	entries, err := os.ReadDir(polecatsDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil // No polecats dir
-		}
-		return nil, err
-	}
-
-	var zombies []zombieInfo
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-
-		// Build session name for this polecat
-		sessionName := fmt.Sprintf("gt-%s-%s", rigName, name)
-
-		// Check if session is running
-		sessionRunning, _ := t.HasSession(sessionName)
-
-		// Check for hooked work
-		hookedWork := checkPolecatHookedWork(townRoot, rigName, name)
-
-		// Get last activity time from polecat directory
-		polecatPath := filepath.Join(polecatsDir, name)
-		staleness := getPolecatStaleness(polecatPath)
-
-		// Determine if this is a zombie
-		state := "unknown"
-		if sessionRunning {
-			state = "session_running"
-			continue // Not a zombie if session is running
-		}
-		state = "session_dead"
-
-		// Check all zombie criteria
-		if hookedWork != "" {
-			// Has hooked work - not a zombie (just needs to be started)
-			continue
-		}
-
-		if staleness < zombieScanThreshold {
-			// Recently active - not stale enough
-			continue
-		}
-
-		// This is a zombie
-		zombies = append(zombies, zombieInfo{
-			rig:           rigName,
-			name:          name,
-			state:         state,
-			sessionStatus: "not running",
-			hookedWork:    "none",
-			staleness:     staleness,
-			reason:        fmt.Sprintf("idle for %s with no session or hooked work", staleness.Round(time.Minute)),
-			sessionName:   sessionName,
-		})
-	}
-
-	return zombies, nil
-}
-
-// checkPolecatHookedWork checks if a polecat has hooked work.
-func checkPolecatHookedWork(townRoot, rigName, polecatName string) string {
-	// Query beads for hooked issues assigned to this polecat
-	assignee := fmt.Sprintf("%s/polecats/%s", rigName, polecatName)
-	cmd := exec.Command("bd", "list", "--status=hooked", "--assignee="+assignee, "--json")
-	cmd.Dir = townRoot
-
-	output, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
-
-	var issues []struct {
-		ID    string `json:"id"`
-		Title string `json:"title"`
-	}
-	if err := json.Unmarshal(output, &issues); err != nil || len(issues) == 0 {
-		return ""
-	}
-
-	return issues[0].ID
-}
-
-// getPolecatStaleness returns how long since the polecat was last active.
-func getPolecatStaleness(polecatPath string) time.Duration {
-	// Check .beads/last-touched if it exists
-	lastTouchedPath := filepath.Join(polecatPath, ".beads", "last-touched")
-	if info, err := os.Stat(lastTouchedPath); err == nil {
-		return time.Since(info.ModTime())
-	}
-
-	// Fall back to directory modification time
-	if info, err := os.Stat(polecatPath); err == nil {
-		return time.Since(info.ModTime())
-	}
-
-	// Very stale if we can't determine
-	return 24 * time.Hour
-}
-
-// nukeZombie cleans up a zombie polecat.
-func nukeZombie(townRoot string, z zombieInfo, t *tmux.Tmux) error { //nolint:unparam // error return kept for future use
-	// Step 1: Kill tmux session if somehow still exists
-	if exists, _ := t.HasSession(z.sessionName); exists {
-		_ = t.KillSession(z.sessionName)
-	}
-
-	// Step 2: Run gt polecat nuke to clean up
-	cmd := exec.Command("gt", "polecat", "nuke", z.name, "--rig="+z.rig, "--force")
-	cmd.Dir = townRoot
-	if err := cmd.Run(); err != nil {
-		// Non-fatal - polecat might already be cleaned up
-		style.PrintWarning("polecat nuke returned error (may be already cleaned): %v", err)
-	}
-
-	return nil
-}
-
-// notifyMayorOfWitnessFailure notifies the mayor about witness cleanup failures.
-func notifyMayorOfWitnessFailure(townRoot string, zombies []zombieInfo) {
-	if len(zombies) == 0 {
-		return
-	}
-
-	// Group by rig
-	rigCounts := make(map[string]int)
-	for _, z := range zombies {
-		rigCounts[z.rig]++
-	}
-
-	var details strings.Builder
-	details.WriteString("Deacon detected zombie polecats that Witness should have cleaned:\n\n")
-	for rig, count := range rigCounts {
-		details.WriteString(fmt.Sprintf("- %s: %d zombie(s)\n", rig, count))
-	}
-	details.WriteString("\nDeacon has nuked them directly. Check Witness health.")
-
-	sendMail(townRoot, "mayor/", "⚠️ Witness cleanup failure detected", details.String())
-}
-
 // agentAddressToIDs converts an agent address to bead ID and session name.
 // Supports formats: "gastown/polecats/max", "gastown/witness", "deacon", "mayor"
 // Note: Town-level agents (Mayor, Deacon) use hq- prefix bead IDs stored in town beads.
@@ -1201,3 +887,67 @@ func updateAgentBeadState(townRoot, agent, state, _ string) { // reason unused b
 	_ = cmd.Run() // Best effort
 }
 
+// runDeaconStaleHooks finds and unhooks stale hooked beads.
+func runDeaconStaleHooks(cmd *cobra.Command, args []string) error {
+	townRoot, err := workspace.FindFromCwdOrError()
+	if err != nil {
+		return fmt.Errorf("not in a Gas Town workspace: %w", err)
+	}
+
+	cfg := &deacon.StaleHookConfig{
+		MaxAge: staleHooksMaxAge,
+		DryRun: staleHooksDryRun,
+	}
+
+	result, err := deacon.ScanStaleHooks(townRoot, cfg)
+	if err != nil {
+		return fmt.Errorf("scanning stale hooks: %w", err)
+	}
+
+	// Print summary
+	if result.TotalHooked == 0 {
+		fmt.Printf("%s No hooked beads found\n", style.Dim.Render("○"))
+		return nil
+	}
+
+	fmt.Printf("%s Found %d hooked bead(s), %d stale (older than %s)\n",
+		style.Bold.Render("●"), result.TotalHooked, result.StaleCount, staleHooksMaxAge)
+
+	if result.StaleCount == 0 {
+		fmt.Printf("%s No stale hooked beads\n", style.Dim.Render("○"))
+		return nil
+	}
+
+	// Print details for each stale bead
+	for _, r := range result.Results {
+		status := style.Dim.Render("○")
+		action := "skipped (agent alive)"
+
+		if !r.AgentAlive {
+			if staleHooksDryRun {
+				status = style.Bold.Render("?")
+				action = "would unhook (agent dead)"
+			} else if r.Unhooked {
+				status = style.Bold.Render("✓")
+				action = "unhooked (agent dead)"
+			} else if r.Error != "" {
+				status = style.Dim.Render("✗")
+				action = fmt.Sprintf("error: %s", r.Error)
+			}
+		}
+
+		fmt.Printf("  %s %s: %s (age: %s, assignee: %s)\n",
+			status, r.BeadID, action, r.Age, r.Assignee)
+	}
+
+	// Summary
+	if staleHooksDryRun {
+		fmt.Printf("\n%s Dry run - no changes made. Run without --dry-run to unhook.\n",
+			style.Dim.Render("ℹ"))
+	} else if result.Unhooked > 0 {
+		fmt.Printf("\n%s Unhooked %d stale bead(s)\n",
+			style.Bold.Render("✓"), result.Unhooked)
+	}
+
+	return nil
+}

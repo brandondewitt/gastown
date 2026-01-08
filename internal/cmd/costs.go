@@ -150,8 +150,8 @@ func runLiveCosts() error {
 		// Extract cost from content
 		cost := extractCost(content)
 
-		// Check if Claude is running
-		running := t.IsClaudeRunning(session)
+		// Check if an agent appears to be running
+		running := t.IsAgentRunning(session)
 
 		costs = append(costs, SessionCost{
 			Session: session,
@@ -428,7 +428,6 @@ func extractCost(content string) float64 {
 	return cost
 }
 
-
 func outputCostsJSON(output CostsOutput) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
@@ -526,6 +525,10 @@ func runCostsRecord(cmd *cobra.Command, args []string) error {
 		session = deriveSessionName()
 	}
 	if session == "" {
+		// Try to detect current tmux session (works when running inside tmux)
+		session = detectCurrentTmuxSession()
+	}
+	if session == "" {
 		return fmt.Errorf("--session flag required (or set GT_SESSION env var, or GT_RIG/GT_ROLE)")
 	}
 
@@ -601,6 +604,16 @@ func runCostsRecord(cmd *cobra.Command, args []string) error {
 
 	eventID := strings.TrimSpace(string(output))
 
+	// Auto-close session events immediately after creation.
+	// These are informational audit events that don't need to stay open.
+	// The event data is preserved in the closed bead and remains queryable.
+	closeCmd := exec.Command("bd", "close", eventID, "--reason=auto-closed session event")
+	if closeErr := closeCmd.Run(); closeErr != nil {
+		// Non-fatal: event was created, just couldn't auto-close
+		// The witness patrol can clean these up if needed
+		fmt.Fprintf(os.Stderr, "warning: could not auto-close session event %s: %v\n", eventID, closeErr)
+	}
+
 	// Output confirmation (silent if cost is zero and no work item)
 	if cost > 0 || recordWorkItem != "" {
 		fmt.Printf("%s Recorded $%.2f for %s (event: %s)", style.Success.Render("✓"), cost, session, eventID)
@@ -646,6 +659,29 @@ func deriveSessionName() string {
 		return fmt.Sprintf("gt-%s-%s", rig, role)
 	}
 
+	return ""
+}
+
+// detectCurrentTmuxSession returns the current tmux session name if running inside tmux.
+// Uses `tmux display-message -p '#S'` which prints the session name.
+func detectCurrentTmuxSession() string {
+	// Check if we're inside tmux
+	if os.Getenv("TMUX") == "" {
+		return ""
+	}
+
+	cmd := exec.Command("tmux", "display-message", "-p", "#S")
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+
+	session := strings.TrimSpace(string(output))
+	// Only return if it looks like a Gas Town session
+	// Accept both gt- (rig sessions) and hq- (town-level sessions like hq-mayor)
+	if strings.HasPrefix(session, constants.SessionPrefix) || strings.HasPrefix(session, constants.HQSessionPrefix) {
+		return session
+	}
 	return ""
 }
 

@@ -3,7 +3,6 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -12,6 +11,7 @@ import (
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
+	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/tmux"
 )
@@ -160,11 +160,6 @@ func (d *Daemon) executeLifecycleAction(request *LifecycleRequest) error {
 
 	d.logger.Printf("Executing %s for session %s", request.Action, sessionName)
 
-	// Verify agent state shows requesting_<action>=true before killing
-	if err := d.verifyAgentRequestingState(request.From, request.Action); err != nil {
-		return fmt.Errorf("state verification failed: %w", err)
-	}
-
 	// Check agent bead state (ZFC: trust what agent reports) - gt-39ttg
 	agentBeadID := d.identityToAgentBeadID(request.From)
 	if agentBeadID != "" {
@@ -206,11 +201,6 @@ func (d *Daemon) executeLifecycleAction(request *LifecycleRequest) error {
 			return fmt.Errorf("restarting session: %w", err)
 		}
 		d.logger.Printf("Restarted session %s", sessionName)
-
-		// Clear the requesting state so we don't cycle again
-		if err := d.clearAgentRequestingState(request.From, request.Action); err != nil {
-			d.logger.Printf("Warning: failed to clear agent state: %v", err)
-		}
 		return nil
 
 	default:
@@ -221,8 +211,8 @@ func (d *Daemon) executeLifecycleAction(request *LifecycleRequest) error {
 // ParsedIdentity holds the components extracted from an agent identity string.
 // This is used to look up the appropriate role bead for lifecycle config.
 type ParsedIdentity struct {
-	RoleType string // mayor, deacon, witness, refinery, crew, polecat
-	RigName  string // Empty for town-level agents (mayor, deacon)
+	RoleType  string // mayor, deacon, witness, refinery, crew, polecat
+	RigName   string // Empty for town-level agents (mayor, deacon)
 	AgentName string // Empty for singletons (mayor, deacon, witness, refinery)
 }
 
@@ -285,15 +275,29 @@ func (d *Daemon) getRoleConfigForIdentity(identity string) (*beads.RoleConfig, *
 	}
 
 	// Look up role bead
-	roleBeadID := beads.RoleBeadID(parsed.RoleType)
 	b := beads.New(d.config.TownRoot)
-	config, err := b.GetRoleConfig(roleBeadID)
+
+	roleBeadID := beads.RoleBeadIDTown(parsed.RoleType)
+	roleConfig, err := b.GetRoleConfig(roleBeadID)
 	if err != nil {
 		d.logger.Printf("Warning: failed to get role config for %s: %v", roleBeadID, err)
 	}
 
+	// Backward compatibility: fall back to legacy role bead IDs.
+	if roleConfig == nil {
+		legacyRoleBeadID := beads.RoleBeadID(parsed.RoleType) // gt-<role>-role
+		if legacyRoleBeadID != roleBeadID {
+			legacyCfg, legacyErr := b.GetRoleConfig(legacyRoleBeadID)
+			if legacyErr != nil {
+				d.logger.Printf("Warning: failed to get legacy role config for %s: %v", legacyRoleBeadID, legacyErr)
+			} else if legacyCfg != nil {
+				roleConfig = legacyCfg
+			}
+		}
+	}
+
 	// Return parsed identity even if config is nil (caller can use defaults)
-	return config, parsed, nil
+	return roleConfig, parsed, nil
 }
 
 // identityToSession converts a beads identity to a tmux session name.
@@ -335,6 +339,15 @@ func (d *Daemon) restartSession(sessionName, identity string) error {
 		return fmt.Errorf("parsing identity: %w", err)
 	}
 
+	// Check rig operational state for rig-level agents (witness, refinery, crew, polecat)
+	// Town-level agents (mayor, deacon) are not affected by rig state
+	if parsed.RigName != "" {
+		if operational, reason := d.isRigOperational(parsed.RigName); !operational {
+			d.logger.Printf("Skipping session restart for %s: %s", identity, reason)
+			return fmt.Errorf("cannot restart session: %s", reason)
+		}
+	}
+
 	// Determine working directory
 	workDir := d.getWorkDir(config, parsed)
 	if workDir == "" {
@@ -374,9 +387,21 @@ func (d *Daemon) restartSession(sessionName, identity string) error {
 		// Non-fatal - Claude might still start
 	}
 	_ = d.tmux.AcceptBypassPermissionsWarning(sessionName)
+	time.Sleep(constants.ShutdownNotifyDelay)
 
-	// Note: gt prime is handled by Claude's SessionStart hook, not injected here.
-	// Injecting it via SendKeysDelayed causes rogue text to appear in the terminal.
+	// GUPP: Gas Town Universal Propulsion Principle
+	// Send startup nudge for predecessor discovery via /resume
+	recipient := identityToBDActor(identity)
+	_ = session.StartupNudge(d.tmux, sessionName, session.StartupNudgeConfig{
+		Recipient: recipient,
+		Sender:    "deacon",
+		Topic:     "lifecycle-restart",
+	}) // Non-fatal
+
+	// Send propulsion nudge to trigger autonomous execution.
+	// Wait for beacon to be fully processed (needs to be separate prompt)
+	time.Sleep(2 * time.Second)
+	_ = d.tmux.NudgeSession(sessionName, session.PropulsionNudgeForRole(parsed.RoleType, workDir)) // Non-fatal
 
 	return nil
 }
@@ -434,12 +459,17 @@ func (d *Daemon) getStartCommand(roleConfig *beads.RoleConfig, parsed *ParsedIde
 		return beads.ExpandRolePattern(roleConfig.StartCommand, d.config.TownRoot, parsed.RigName, parsed.AgentName, parsed.RoleType)
 	}
 
+	rigPath := ""
+	if parsed != nil && parsed.RigName != "" {
+		rigPath = filepath.Join(d.config.TownRoot, parsed.RigName)
+	}
+
 	// Default command for all agents - use runtime config
-	defaultCmd := "exec " + config.GetRuntimeCommand("")
+	defaultCmd := "exec " + config.GetRuntimeCommand(rigPath)
 
 	// Polecats need environment variables set in the command
 	if parsed.RoleType == "polecat" {
-		return config.BuildPolecatStartupCommand(parsed.RigName, parsed.AgentName, "", "")
+		return config.BuildPolecatStartupCommand(parsed.RigName, parsed.AgentName, rigPath, "")
 	}
 
 	return defaultCmd
@@ -478,6 +508,20 @@ func (d *Daemon) applySessionTheme(sessionName string, parsed *ParsedIdentity) {
 // syncWorkspace syncs a git workspace before starting a new session.
 // This ensures agents with persistent clones (like refinery) start with current code.
 func (d *Daemon) syncWorkspace(workDir string) {
+	// Determine default branch from rig config
+	// workDir is like <townRoot>/<rigName>/<role>/rig or <townRoot>/<rigName>/crew/<name>
+	defaultBranch := "main" // fallback
+	rel, err := filepath.Rel(d.config.TownRoot, workDir)
+	if err == nil {
+		parts := strings.Split(rel, string(filepath.Separator))
+		if len(parts) > 0 {
+			rigPath := filepath.Join(d.config.TownRoot, parts[0])
+			if rigCfg, err := rig.LoadRigConfig(rigPath); err == nil && rigCfg.DefaultBranch != "" {
+				defaultBranch = rigCfg.DefaultBranch
+			}
+		}
+	}
+
 	// Fetch latest from origin
 	fetchCmd := exec.Command("git", "fetch", "origin")
 	fetchCmd.Dir = workDir
@@ -486,7 +530,7 @@ func (d *Daemon) syncWorkspace(workDir string) {
 	}
 
 	// Pull with rebase to incorporate changes
-	pullCmd := exec.Command("git", "pull", "--rebase", "origin", "main")
+	pullCmd := exec.Command("git", "pull", "--rebase", "origin", defaultBranch)
 	pullCmd.Dir = workDir
 	if err := pullCmd.Run(); err != nil {
 		d.logger.Printf("Warning: git pull failed in %s: %v", workDir, err)
@@ -517,115 +561,6 @@ func (d *Daemon) closeMessage(id string) error {
 	return nil
 }
 
-// verifyAgentRequestingState verifies that the agent has set requesting_<action>=true
-// in its state.json before we kill its session. This ensures the agent is actually
-// ready to be killed and has completed its pre-shutdown tasks (git clean, handoff mail, etc).
-func (d *Daemon) verifyAgentRequestingState(identity string, action LifecycleAction) error {
-	stateFile := d.identityToStateFile(identity)
-	if stateFile == "" {
-		// If we can't determine state file, log warning but allow action
-		// This maintains backwards compatibility with agents that don't support state files yet
-		d.logger.Printf("Warning: cannot determine state file for %s, skipping verification", identity)
-		return nil
-	}
-
-	data, err := os.ReadFile(stateFile)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("agent state file not found: %s (agent must set requesting_%s=true before lifecycle request)", stateFile, action)
-		}
-		return fmt.Errorf("reading agent state: %w", err)
-	}
-
-	var state map[string]interface{}
-	if err := json.Unmarshal(data, &state); err != nil {
-		return fmt.Errorf("parsing agent state: %w", err)
-	}
-
-	// Check for requesting_<action>=true
-	key := "requesting_" + string(action)
-	val, ok := state[key]
-	if !ok {
-		return fmt.Errorf("agent state missing %s field (agent must set this before lifecycle request)", key)
-	}
-
-	requesting, ok := val.(bool)
-	if !ok || !requesting {
-		return fmt.Errorf("agent state %s is not true (got: %v)", key, val)
-	}
-
-	d.logger.Printf("Verified agent %s has %s=true", identity, key)
-	return nil
-}
-
-// clearAgentRequestingState clears the requesting_<action>=true flag after
-// successfully completing a lifecycle action. This prevents the daemon from
-// repeatedly cycling the same session.
-func (d *Daemon) clearAgentRequestingState(identity string, action LifecycleAction) error {
-	stateFile := d.identityToStateFile(identity)
-	if stateFile == "" {
-		return fmt.Errorf("cannot determine state file for %s", identity)
-	}
-
-	data, err := os.ReadFile(stateFile)
-	if err != nil {
-		return fmt.Errorf("reading state file: %w", err)
-	}
-
-	var state map[string]interface{}
-	if err := json.Unmarshal(data, &state); err != nil {
-		return fmt.Errorf("parsing state: %w", err)
-	}
-
-	// Remove the requesting_<action> key
-	key := "requesting_" + string(action)
-	delete(state, key)
-	delete(state, "requesting_time") // Also clean up the timestamp
-
-	// Write back
-	newData, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshaling state: %w", err)
-	}
-
-	if err := os.WriteFile(stateFile, newData, 0644); err != nil {
-		return fmt.Errorf("writing state file: %w", err)
-	}
-
-	d.logger.Printf("Cleared %s from agent %s state", key, identity)
-	return nil
-}
-
-// identityToStateFile maps an agent identity to its state.json file path.
-// Uses parseIdentity to extract components, then derives state file location.
-func (d *Daemon) identityToStateFile(identity string) string {
-	parsed, err := parseIdentity(identity)
-	if err != nil {
-		return ""
-	}
-
-	// Derive state file path based on working directory
-	workDir := d.getWorkDir(nil, parsed) // Use defaults, not role bead config
-	if workDir == "" {
-		return ""
-	}
-
-	// For mayor and deacon, state file is in a subdirectory
-	switch parsed.RoleType {
-	case "mayor":
-		return filepath.Join(d.config.TownRoot, "mayor", "state.json")
-	case "deacon":
-		return filepath.Join(d.config.TownRoot, "deacon", "state.json")
-	case "witness":
-		return filepath.Join(d.config.TownRoot, parsed.RigName, "witness", "state.json")
-	case "refinery":
-		return filepath.Join(d.config.TownRoot, parsed.RigName, "refinery", "state.json")
-	default:
-		// For crew and polecat, state file is in their working directory
-		return filepath.Join(workDir, "state.json")
-	}
-}
-
 // AgentBeadInfo represents the parsed fields from an agent bead.
 type AgentBeadInfo struct {
 	ID         string `json:"id"`
@@ -638,9 +573,10 @@ type AgentBeadInfo struct {
 	LastUpdate string `json:"updated_at"`
 }
 
-// getAgentBeadState reads agent state from an agent bead.
-// This is the ZFC-compliant way to get agent state: trust what agents report.
-// Returns the agent_state field value (idle|running|stuck|stopped) or empty string if not found.
+// getAgentBeadState reads non-observable agent state from an agent bead.
+// Per gt-zecmc: Observable states (running, dead, idle) are derived from tmux.
+// Only non-observable states (stuck, awaiting-gate, muted, paused) are stored in beads.
+// Returns the agent_state field value or empty string if not found.
 func (d *Daemon) getAgentBeadState(agentBeadID string) (string, error) {
 	info, err := d.getAgentBeadInfo(agentBeadID)
 	if err != nil {
@@ -665,7 +601,7 @@ func (d *Daemon) getAgentBeadInfo(agentBeadID string) (*AgentBeadInfo, error) {
 		Type        string `json:"issue_type"`
 		Description string `json:"description"`
 		UpdatedAt   string `json:"updated_at"`
-		HookBead    string `json:"hook_bead"`    // Read from database column
+		HookBead    string `json:"hook_bead"`   // Read from database column
 		AgentState  string `json:"agent_state"` // Read from database column
 	}
 
@@ -719,111 +655,25 @@ func (d *Daemon) identityToAgentBeadID(identity string) string {
 	case "mayor":
 		return beads.MayorBeadIDTown()
 	case "witness":
-		return beads.WitnessBeadID(parsed.RigName)
+		prefix := config.GetRigPrefix(d.config.TownRoot, parsed.RigName)
+		return beads.WitnessBeadIDWithPrefix(prefix, parsed.RigName)
 	case "refinery":
-		return beads.RefineryBeadID(parsed.RigName)
+		prefix := config.GetRigPrefix(d.config.TownRoot, parsed.RigName)
+		return beads.RefineryBeadIDWithPrefix(prefix, parsed.RigName)
 	case "crew":
-		return beads.CrewBeadID(parsed.RigName, parsed.AgentName)
+		prefix := config.GetRigPrefix(d.config.TownRoot, parsed.RigName)
+		return beads.CrewBeadIDWithPrefix(prefix, parsed.RigName, parsed.AgentName)
 	case "polecat":
-		return beads.PolecatBeadID(parsed.RigName, parsed.AgentName)
+		prefix := config.GetRigPrefix(d.config.TownRoot, parsed.RigName)
+		return beads.PolecatBeadIDWithPrefix(prefix, parsed.RigName, parsed.AgentName)
 	default:
 		return ""
 	}
 }
 
-// DeadAgentTimeout is how long an agent can report "running" without updating
-// before the daemon marks it as dead. This is a fallback for crashed agents.
-const DeadAgentTimeout = 15 * time.Minute
-
-// checkStaleAgents looks for agents that report state=running but haven't
-// updated their bead recently. These are likely dead agents that crashed
-// without updating their state. This is the timeout fallback per gt-2hzl4.
-func (d *Daemon) checkStaleAgents() {
-	// Known agent bead IDs to check
-	agentBeadIDs := []string{
-		beads.DeaconBeadIDTown(),
-		beads.MayorBeadIDTown(),
-	}
-
-	// Dynamically discover rigs from the rigs config
-	rigsConfigPath := filepath.Join(d.config.TownRoot, "mayor", "rigs.json")
-	rigsConfig, err := config.LoadRigsConfig(rigsConfigPath)
-	if err != nil {
-		// Log warning but continue with global agents only
-		d.logger.Printf("Warning: could not load rigs config: %v", err)
-	} else {
-		// Add rig-specific agents (witness, refinery) for each discovered rig
-		for rigName := range rigsConfig.Rigs {
-			agentBeadIDs = append(agentBeadIDs, beads.WitnessBeadID(rigName))
-			agentBeadIDs = append(agentBeadIDs, beads.RefineryBeadID(rigName))
-		}
-	}
-
-	for _, agentBeadID := range agentBeadIDs {
-		info, err := d.getAgentBeadInfo(agentBeadID)
-		if err != nil {
-			// Agent bead doesn't exist or error fetching - skip
-			continue
-		}
-
-		// Only check agents reporting they're running/working
-		if info.State != "running" && info.State != "working" {
-			continue
-		}
-
-		// Parse the updated_at timestamp
-		updatedAt, err := time.Parse(time.RFC3339, info.LastUpdate)
-		if err != nil {
-			d.logger.Printf("Warning: cannot parse updated_at for %s: %v", agentBeadID, err)
-			continue
-		}
-
-		// Check if stale
-		age := time.Since(updatedAt)
-		if age > DeadAgentTimeout {
-			d.logger.Printf("Agent %s appears dead (state=%s, last update %v ago, timeout %v)",
-				agentBeadID, info.State, age.Round(time.Minute), DeadAgentTimeout)
-
-			// Mark as dead
-			if err := d.markAgentDead(agentBeadID); err != nil {
-				d.logger.Printf("Warning: failed to mark %s as dead: %v", agentBeadID, err)
-			} else {
-				d.logger.Printf("Marked agent %s as dead due to timeout", agentBeadID)
-			}
-		}
-	}
-}
-
-// markAgentDead updates an agent bead's state to "dead".
-// Uses bd update to modify the description with the new agent_state.
-func (d *Daemon) markAgentDead(agentBeadID string) error {
-	// Get current agent info
-	info, err := d.getAgentBeadInfo(agentBeadID)
-	if err != nil {
-		return fmt.Errorf("fetching agent bead: %w", err)
-	}
-
-	// Build new description with updated state
-	newDesc := fmt.Sprintf("role_type: %s\nrig: %s\nagent_state: dead\nhook_bead: %s\nrole_bead: %s\n\nMarked dead by daemon at %s (was %s, last update too old)",
-		info.RoleType,
-		info.Rig,
-		info.HookBead,
-		info.RoleBead,
-		time.Now().Format(time.RFC3339),
-		info.State,
-	)
-
-	// Use bd update to set the new description
-	cmd := exec.Command("bd", "update", agentBeadID, "--description", newDesc)
-	cmd.Dir = d.config.TownRoot
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("bd update: %w (output: %s)", err, string(output))
-	}
-
-	return nil
-}
+// NOTE: checkStaleAgents() and markAgentDead() were removed in gt-zecmc.
+// Agent liveness is now discovered from tmux, not recorded in beads.
+// "Discover, don't track" principle: observable state should not be recorded.
 
 // identityToBDActor converts a daemon identity to BD_ACTOR format (with slashes).
 // Uses parseIdentity to extract components, then builds the slash format.
@@ -909,9 +759,14 @@ func (d *Daemon) checkRigGUPPViolations(rigName string) {
 			continue // No hooked work - no GUPP violation possible
 		}
 
-		// Check if agent is actively working
-		if agent.AgentState == "working" || agent.AgentState == "running" {
-			// Check when the agent bead was last updated
+		// Per gt-zecmc: derive running state from tmux, not agent_state
+		// Extract polecat name from agent ID (gt-polecat-<rig>-<name> -> <name>)
+		polecatName := strings.TrimPrefix(agent.ID, prefix)
+		sessionName := fmt.Sprintf("gt-%s-%s", rigName, polecatName)
+
+		// Check if tmux session exists and Claude is running
+		if d.tmux.IsClaudeRunning(sessionName) {
+			// Session is alive - check if it's been stuck too long
 			updatedAt, err := time.Parse(time.RFC3339, agent.UpdatedAt)
 			if err != nil {
 				continue
@@ -953,69 +808,61 @@ Action needed: Check if agent is alive and responsive. Consider restarting if st
 
 // checkOrphanedWork looks for work assigned to dead agents.
 // Orphaned work needs to be reassigned or the agent needs to be restarted.
+// Per gt-zecmc: derive agent liveness from tmux, not agent_state.
 func (d *Daemon) checkOrphanedWork() {
-	// Get list of dead agents
-	deadAgents := d.getDeadAgents()
-	if len(deadAgents) == 0 {
-		return
-	}
-
-	// For each dead agent, check if they have hooked work
-	// Use HookBead from database column directly (not parsed from description)
-	for _, agent := range deadAgents {
-		if agent.HookBead == "" {
-			continue // No hooked work to orphan
-		}
-
-		d.logger.Printf("Orphaned work detected: agent %s is dead but has hook_bead=%s",
-			agent.ID, agent.HookBead)
-
-		// Determine the rig from the agent ID (gt-polecat-<rig>-<name>)
-		rigName := d.extractRigFromAgentID(agent.ID)
-		if rigName != "" {
-			d.notifyWitnessOfOrphanedWork(rigName, agent.ID, agent.HookBead)
-		}
+	// Check all polecat agents with hooked work
+	rigs := d.getKnownRigs()
+	for _, rigName := range rigs {
+		d.checkRigOrphanedWork(rigName)
 	}
 }
 
-// deadAgentInfo holds info about a dead agent for orphaned work detection.
-type deadAgentInfo struct {
-	ID       string
-	HookBead string // Read from database column, not description
-}
-
-// getDeadAgents returns all agent beads with state=dead.
-func (d *Daemon) getDeadAgents() []deadAgentInfo {
+// checkRigOrphanedWork checks polecats in a specific rig for orphaned work.
+func (d *Daemon) checkRigOrphanedWork(rigName string) {
 	cmd := exec.Command("bd", "list", "--type=agent", "--json")
 	cmd.Dir = d.config.TownRoot
 
 	output, err := cmd.Output()
 	if err != nil {
-		return nil
+		return
 	}
 
 	var agents []struct {
-		ID         string `json:"id"`
-		Type       string `json:"issue_type"`
-		HookBead   string `json:"hook_bead"`    // Read from database column
-		AgentState string `json:"agent_state"` // Read from database column
+		ID       string `json:"id"`
+		HookBead string `json:"hook_bead"`
 	}
 
 	if err := json.Unmarshal(output, &agents); err != nil {
-		return nil
+		return
 	}
 
-	var dead []deadAgentInfo
+	prefix := "gt-polecat-" + rigName + "-"
 	for _, agent := range agents {
-		if agent.AgentState == "dead" {
-			dead = append(dead, deadAgentInfo{
-				ID:       agent.ID,
-				HookBead: agent.HookBead,
-			})
+		// Only check polecats for this rig
+		if !strings.HasPrefix(agent.ID, prefix) {
+			continue
 		}
-	}
 
-	return dead
+		// No hooked work = nothing to orphan
+		if agent.HookBead == "" {
+			continue
+		}
+
+		// Check if tmux session is alive (derive state from tmux, not bead)
+		polecatName := strings.TrimPrefix(agent.ID, prefix)
+		sessionName := fmt.Sprintf("gt-%s-%s", rigName, polecatName)
+
+		// Session running = not orphaned (work is being processed)
+		if d.tmux.IsClaudeRunning(sessionName) {
+			continue
+		}
+
+		// Session dead but has hooked work = orphaned!
+		d.logger.Printf("Orphaned work detected: agent %s session is dead but has hook_bead=%s",
+			agent.ID, agent.HookBead)
+
+		d.notifyWitnessOfOrphanedWork(rigName, agent.ID, agent.HookBead)
+	}
 }
 
 // extractRigFromAgentID extracts the rig name from a polecat agent ID.
@@ -1056,4 +903,3 @@ Action needed: Either restart the agent or reassign the work.`,
 		d.logger.Printf("Notified %s of orphaned work for %s", witnessAddr, agentID)
 	}
 }
-

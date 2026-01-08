@@ -1,10 +1,8 @@
 package witness
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -12,6 +10,9 @@ import (
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/mail"
+	"github.com/steveyegge/gastown/internal/rig"
+	"github.com/steveyegge/gastown/internal/tmux"
+	"github.com/steveyegge/gastown/internal/util"
 	"github.com/steveyegge/gastown/internal/workspace"
 )
 
@@ -66,18 +67,34 @@ func HandlePolecatDone(workDir, rigName string, msg *mail.Message) *HandlerResul
 	// ESCALATED/DEFERRED exits typically have no MR pending
 	hasPendingMR := payload.MRID != "" || payload.Exit == "COMPLETED"
 
-	// Ephemeral model: try to auto-nuke immediately regardless of MR status
-	// If cleanup_status is clean, the branch is pushed and polecat is recyclable.
-	// The MR will be processed independently by the Refinery.
+	// Local-only branches model: if there's a pending MR, DON'T nuke.
+	// The polecat's local branch is needed for conflict resolution if merge fails.
+	// Once the MR merges (MERGED signal), HandleMerged will nuke the polecat.
+	if hasPendingMR {
+		// Create cleanup wisp to track this polecat is waiting for merge
+		wispID, err := createCleanupWisp(workDir, payload.PolecatName, payload.IssueID, payload.Branch)
+		if err != nil {
+			result.Error = fmt.Errorf("creating cleanup wisp: %w", err)
+			return result
+		}
+
+		// Update wisp state to indicate it's waiting for merge
+		if err := UpdateCleanupWispState(workDir, wispID, "merge-requested"); err != nil {
+			// Non-fatal - wisp was created, just couldn't update state
+			result.Error = fmt.Errorf("updating wisp state: %w", err)
+		}
+
+		result.Handled = true
+		result.WispCreated = wispID
+		result.Action = fmt.Sprintf("deferred cleanup for %s (pending MR=%s, local branch preserved for conflict resolution)", payload.PolecatName, payload.MRID)
+		return result
+	}
+
+	// No pending MR - try to auto-nuke immediately
 	nukeResult := AutoNukeIfClean(workDir, rigName, payload.PolecatName)
 	if nukeResult.Nuked {
 		result.Handled = true
-		if hasPendingMR {
-			// Ephemeral model: polecat nuked, MR continues in Refinery
-			result.Action = fmt.Sprintf("auto-nuked %s (ephemeral: exit=%s, MR=%s): %s", payload.PolecatName, payload.Exit, payload.MRID, nukeResult.Reason)
-		} else {
-			result.Action = fmt.Sprintf("auto-nuked %s (exit=%s, no MR): %s", payload.PolecatName, payload.Exit, nukeResult.Reason)
-		}
+		result.Action = fmt.Sprintf("auto-nuked %s (exit=%s, no MR): %s", payload.PolecatName, payload.Exit, nukeResult.Reason)
 		return result
 	}
 	if nukeResult.Error != nil {
@@ -86,8 +103,6 @@ func HandlePolecatDone(workDir, rigName string, msg *mail.Message) *HandlerResul
 	}
 
 	// Couldn't auto-nuke (dirty state or verification failed) - create wisp for manual intervention
-	// Note: Even with pending MR, if we can't auto-nuke it means something is wrong
-	// (uncommitted changes, unpushed commits, etc.) that needs attention.
 	wispID, err := createCleanupWisp(workDir, payload.PolecatName, payload.IssueID, payload.Branch)
 	if err != nil {
 		result.Error = fmt.Errorf("creating cleanup wisp: %w", err)
@@ -96,11 +111,7 @@ func HandlePolecatDone(workDir, rigName string, msg *mail.Message) *HandlerResul
 
 	result.Handled = true
 	result.WispCreated = wispID
-	if hasPendingMR {
-		result.Action = fmt.Sprintf("created cleanup wisp %s for %s (MR=%s, needs intervention: %s)", wispID, payload.PolecatName, payload.MRID, nukeResult.Reason)
-	} else {
-		result.Action = fmt.Sprintf("created cleanup wisp %s for %s (needs manual cleanup: %s)", wispID, payload.PolecatName, nukeResult.Reason)
-	}
+	result.Action = fmt.Sprintf("created cleanup wisp %s for %s (needs manual cleanup: %s)", wispID, payload.PolecatName, nukeResult.Reason)
 
 	return result
 }
@@ -293,6 +304,56 @@ func HandleMerged(workDir, rigName string, msg *mail.Message) *HandlerResult {
 	return result
 }
 
+// HandleMergeFailed processes a MERGE_FAILED message from the Refinery.
+// Notifies the polecat that their merge was rejected and rework is needed.
+func HandleMergeFailed(workDir, rigName string, msg *mail.Message, router *mail.Router) *HandlerResult {
+	result := &HandlerResult{
+		MessageID:    msg.ID,
+		ProtocolType: ProtoMergeFailed,
+	}
+
+	// Parse the message
+	payload, err := ParseMergeFailed(msg.Subject, msg.Body)
+	if err != nil {
+		result.Error = fmt.Errorf("parsing MERGE_FAILED: %w", err)
+		return result
+	}
+
+	// Notify the polecat about the failure
+	polecatAddr := fmt.Sprintf("%s/polecats/%s", rigName, payload.PolecatName)
+	notification := &mail.Message{
+		From:     fmt.Sprintf("%s/witness", rigName),
+		To:       polecatAddr,
+		Subject:  fmt.Sprintf("Merge failed: %s", payload.FailureType),
+		Priority: mail.PriorityHigh,
+		Type:     mail.TypeTask,
+		Body: fmt.Sprintf(`Your merge request was rejected.
+
+Branch: %s
+Issue: %s
+Failure: %s
+Error: %s
+
+Please fix the issue and resubmit with 'gt done'.`,
+			payload.Branch,
+			payload.IssueID,
+			payload.FailureType,
+			payload.Error,
+		),
+	}
+
+	if err := router.Send(notification); err != nil {
+		result.Error = fmt.Errorf("sending failure notification: %w", err)
+		return result
+	}
+
+	result.Handled = true
+	result.MailSent = notification.ID
+	result.Action = fmt.Sprintf("notified %s of merge failure: %s - %s", payload.PolecatName, payload.FailureType, payload.Error)
+
+	return result
+}
+
 // HandleSwarmStart processes a SWARM_START message from the Mayor.
 // Creates a swarm tracking wisp to monitor batch polecat work.
 func HandleSwarmStart(workDir string, msg *mail.Message) *HandlerResult {
@@ -335,28 +396,17 @@ func createCleanupWisp(workDir, polecatName, issueID, branch string) (string, er
 
 	labels := strings.Join(CleanupWispLabels(polecatName, "pending"), ",")
 
-	cmd := exec.Command("bd", "create", //nolint:gosec // G204: args are constructed internally
-		"--wisp",
+	output, err := util.ExecWithOutput(workDir, "bd", "create",
+		"--ephemeral",
 		"--title", title,
 		"--description", description,
 		"--labels", labels,
 	)
-	cmd.Dir = workDir
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		errMsg := strings.TrimSpace(stderr.String())
-		if errMsg != "" {
-			return "", fmt.Errorf("%s", errMsg)
-		}
+	if err != nil {
 		return "", err
 	}
 
 	// Extract wisp ID from output (bd create outputs "Created: <id>")
-	output := strings.TrimSpace(stdout.String())
 	if strings.HasPrefix(output, "Created:") {
 		return strings.TrimSpace(strings.TrimPrefix(output, "Created:")), nil
 	}
@@ -380,27 +430,16 @@ func createSwarmWisp(workDir string, payload *SwarmStartPayload) (string, error)
 
 	labels := strings.Join(SwarmWispLabels(payload.SwarmID, payload.Total, 0, payload.StartedAt), ",")
 
-	cmd := exec.Command("bd", "create", //nolint:gosec // G204: args are constructed internally
-		"--wisp",
+	output, err := util.ExecWithOutput(workDir, "bd", "create",
+		"--ephemeral",
 		"--title", title,
 		"--description", description,
 		"--labels", labels,
 	)
-	cmd.Dir = workDir
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		errMsg := strings.TrimSpace(stderr.String())
-		if errMsg != "" {
-			return "", fmt.Errorf("%s", errMsg)
-		}
+	if err != nil {
 		return "", err
 	}
 
-	output := strings.TrimSpace(stdout.String())
 	if strings.HasPrefix(output, "Created:") {
 		return strings.TrimSpace(strings.TrimPrefix(output, "Created:")), nil
 	}
@@ -410,32 +449,21 @@ func createSwarmWisp(workDir string, payload *SwarmStartPayload) (string, error)
 
 // findCleanupWisp finds an existing cleanup wisp for a polecat.
 func findCleanupWisp(workDir, polecatName string) (string, error) {
-	cmd := exec.Command("bd", "list", //nolint:gosec // G204: bd is a trusted internal tool
-		"--wisp",
+	output, err := util.ExecWithOutput(workDir, "bd", "list",
+		"--ephemeral",
 		"--labels", fmt.Sprintf("polecat:%s,state:merge-requested", polecatName),
 		"--status", "open",
 		"--json",
 	)
-	cmd.Dir = workDir
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
+	if err != nil {
 		// Empty result is fine
-		if strings.Contains(stderr.String(), "no issues found") {
+		if strings.Contains(err.Error(), "no issues found") {
 			return "", nil
-		}
-		errMsg := strings.TrimSpace(stderr.String())
-		if errMsg != "" {
-			return "", fmt.Errorf("%s", errMsg)
 		}
 		return "", err
 	}
 
 	// Parse JSON to get the wisp ID
-	output := strings.TrimSpace(stdout.String())
 	if output == "" || output == "[]" || output == "null" {
 		return "", nil
 	}
@@ -475,26 +503,19 @@ func getCleanupStatus(workDir, rigName, polecatName string) string {
 	prefix := beads.GetPrefixForRig(townRoot, rigName)
 	agentBeadID := beads.PolecatBeadIDWithPrefix(prefix, rigName, polecatName)
 
-	cmd := exec.Command("bd", "show", agentBeadID, "--json") //nolint:gosec // G204: agentBeadID is validated internally
-	cmd.Dir = workDir
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
+	output, err := util.ExecWithOutput(workDir, "bd", "show", agentBeadID, "--json")
+	if err != nil {
 		// Agent bead doesn't exist or bd failed - return empty (unknown status)
 		return ""
 	}
 
-	output := stdout.Bytes()
-	if len(output) == 0 {
+	if output == "" {
 		return ""
 	}
 
 	// Parse the JSON response
 	var resp agentBeadResponse
-	if err := json.Unmarshal(output, &resp); err != nil {
+	if err := json.Unmarshal([]byte(output), &resp); err != nil {
 		return ""
 	}
 
@@ -597,18 +618,12 @@ DO NOT nuke without --force after recovery.`,
 // UpdateCleanupWispState updates a cleanup wisp's state label.
 func UpdateCleanupWispState(workDir, wispID, newState string) error {
 	// Get current labels to preserve other labels
-	cmd := exec.Command("bd", "show", wispID, "--json")
-	cmd.Dir = workDir
-
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-
-	if err := cmd.Run(); err != nil {
+	output, err := util.ExecWithOutput(workDir, "bd", "show", wispID, "--json")
+	if err != nil {
 		return fmt.Errorf("getting wisp: %w", err)
 	}
 
 	// Extract polecat name from existing labels for the update
-	output := stdout.String()
 	var polecatName string
 	if idx := strings.Index(output, `polecat:`); idx >= 0 {
 		rest := output[idx+8:]
@@ -624,40 +639,38 @@ func UpdateCleanupWispState(workDir, wispID, newState string) error {
 	// Update with new state
 	newLabels := strings.Join(CleanupWispLabels(polecatName, newState), ",")
 
-	updateCmd := exec.Command("bd", "update", wispID, "--labels", newLabels) //nolint:gosec // G204: args are constructed internally
-	updateCmd.Dir = workDir
-
-	var stderr bytes.Buffer
-	updateCmd.Stderr = &stderr
-
-	if err := updateCmd.Run(); err != nil {
-		errMsg := strings.TrimSpace(stderr.String())
-		if errMsg != "" {
-			return fmt.Errorf("%s", errMsg)
-		}
-		return err
-	}
-
-	return nil
+	return util.ExecRun(workDir, "bd", "update", wispID, "--labels", newLabels)
 }
 
 // NukePolecat executes the actual nuke operation for a polecat.
 // This kills the tmux session, removes the worktree, and cleans up beads.
 // Should only be called after all safety checks pass.
 func NukePolecat(workDir, rigName, polecatName string) error {
+	// CRITICAL: Kill the tmux session FIRST and unconditionally.
+	// The session name follows the pattern gt-<rig>-<polecat>.
+	// We do this explicitly here because gt polecat nuke may fail to kill the
+	// session due to rig loading issues or race conditions with IsRunning checks.
+	// See: gt-g9ft5 - sessions were piling up because nuke wasn't killing them.
+	sessionName := fmt.Sprintf("gt-%s-%s", rigName, polecatName)
+	t := tmux.NewTmux()
+
+	// Check if session exists and kill it
+	if running, _ := t.HasSession(sessionName); running {
+		// Try graceful shutdown first (Ctrl-C), then force kill
+		_ = t.SendKeysRaw(sessionName, "C-c")
+		// Brief delay for graceful handling
+		time.Sleep(100 * time.Millisecond)
+		// Force kill the session
+		if err := t.KillSession(sessionName); err != nil {
+			// Log but continue - session might already be dead
+			// The important thing is we tried
+		}
+	}
+
+	// Now run gt polecat nuke to clean up worktree, branch, and beads
 	address := fmt.Sprintf("%s/%s", rigName, polecatName)
 
-	cmd := exec.Command("gt", "polecat", "nuke", address) //nolint:gosec // G204: address is constructed from validated internal data
-	cmd.Dir = workDir
-
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		errMsg := strings.TrimSpace(stderr.String())
-		if errMsg != "" {
-			return fmt.Errorf("nuke failed: %s", errMsg)
-		}
+	if err := util.ExecRun(workDir, "gt", "polecat", "nuke", address); err != nil {
 		return fmt.Errorf("nuke failed: %w", err)
 	}
 
@@ -723,18 +736,28 @@ func AutoNukeIfClean(workDir, rigName, polecatName string) *NukePolecatResult {
 	return result
 }
 
-// verifyCommitOnMain checks if the polecat's current commit is on main.
+// verifyCommitOnMain checks if the polecat's current commit is on the default branch.
 // This prevents nuking a polecat whose work wasn't actually merged.
 //
+// In multi-remote setups, the code may live on a remote other than "origin"
+// (e.g., "gastown" for gastown.git). This function checks ALL remotes to find
+// the one containing the default branch with the merged commit.
+//
 // Returns:
-//   - true, nil: commit is verified on main
-//   - false, nil: commit is NOT on main (don't nuke!)
+//   - true, nil: commit is verified on default branch
+//   - false, nil: commit is NOT on default branch (don't nuke!)
 //   - false, error: couldn't verify (treat as unsafe)
 func verifyCommitOnMain(workDir, rigName, polecatName string) (bool, error) {
 	// Find town root from workDir
 	townRoot, err := workspace.Find(workDir)
 	if err != nil || townRoot == "" {
 		return false, fmt.Errorf("finding town root: %v", err)
+	}
+
+	// Get configured default branch for this rig
+	defaultBranch := "main" // fallback
+	if rigCfg, err := rig.LoadRigConfig(filepath.Join(townRoot, rigName)); err == nil && rigCfg.DefaultBranch != "" {
+		defaultBranch = rigCfg.DefaultBranch
 	}
 
 	// Construct polecat path: <townRoot>/<rigName>/polecats/<polecatName>
@@ -749,16 +772,33 @@ func verifyCommitOnMain(workDir, rigName, polecatName string) (bool, error) {
 		return false, fmt.Errorf("getting polecat HEAD: %w", err)
 	}
 
-	// Verify it's an ancestor of main (i.e., it's been merged)
-	// We use the polecat's git context to check main
-	isOnMain, err := g.IsAncestor(commitSHA, "origin/main")
+	// Get all configured remotes and check each one for the commit
+	// This handles multi-remote setups where code may be on a remote other than "origin"
+	remotes, err := g.Remotes()
 	if err != nil {
-		// Try without origin/ prefix in case remote isn't set up
-		isOnMain, err = g.IsAncestor(commitSHA, "main")
+		// If we can't list remotes, fall back to checking just the local branch
+		isOnDefaultBranch, err := g.IsAncestor(commitSHA, defaultBranch)
 		if err != nil {
-			return false, fmt.Errorf("checking if commit is on main: %w", err)
+			return false, fmt.Errorf("checking if commit is on %s: %w", defaultBranch, err)
+		}
+		return isOnDefaultBranch, nil
+	}
+
+	// Try each remote/<defaultBranch> until we find one where commit is an ancestor
+	for _, remote := range remotes {
+		remoteBranch := remote + "/" + defaultBranch
+		isOnRemote, err := g.IsAncestor(commitSHA, remoteBranch)
+		if err == nil && isOnRemote {
+			return true, nil
 		}
 	}
 
-	return isOnMain, nil
+	// Also try the local default branch (in case we're not tracking a remote)
+	isOnDefaultBranch, err := g.IsAncestor(commitSHA, defaultBranch)
+	if err == nil && isOnDefaultBranch {
+		return true, nil
+	}
+
+	// Commit is not on any remote's default branch
+	return false, nil
 }
