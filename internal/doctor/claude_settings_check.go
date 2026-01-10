@@ -10,6 +10,7 @@ import (
 
 	"github.com/steveyegge/gastown/internal/claude"
 	"github.com/steveyegge/gastown/internal/session"
+	"github.com/steveyegge/gastown/internal/style"
 	"github.com/steveyegge/gastown/internal/templates"
 	"github.com/steveyegge/gastown/internal/tmux"
 	"github.com/steveyegge/gastown/internal/workspace"
@@ -49,6 +50,7 @@ func NewClaudeSettingsCheck() *ClaudeSettingsCheck {
 			BaseCheck: BaseCheck{
 				CheckName:        "claude-settings",
 				CheckDescription: "Verify Claude settings.json files match expected templates",
+				CheckCategory:    CategoryConfig,
 			},
 		},
 	}
@@ -287,15 +289,23 @@ func (c *ClaudeSettingsCheck) findSettingsFiles(townRoot string) []staleSettings
 				if !pcEntry.IsDir() || pcEntry.Name() == ".claude" {
 					continue
 				}
-				pcWrongSettings := filepath.Join(polecatsDir, pcEntry.Name(), ".claude", "settings.json")
-				if fileExists(pcWrongSettings) {
-					files = append(files, staleSettingsInfo{
-						path:          pcWrongSettings,
-						agentType:     "polecat",
-						rigName:       rigName,
-						sessionName:   fmt.Sprintf("gt-%s-%s", rigName, pcEntry.Name()),
-						wrongLocation: true,
-					})
+				// Check for wrong settings in both structures:
+				// Old structure: polecats/<name>/.claude/settings.json
+				// New structure: polecats/<name>/<rigname>/.claude/settings.json
+				wrongPaths := []string{
+					filepath.Join(polecatsDir, pcEntry.Name(), ".claude", "settings.json"),
+					filepath.Join(polecatsDir, pcEntry.Name(), rigName, ".claude", "settings.json"),
+				}
+				for _, pcWrongSettings := range wrongPaths {
+					if fileExists(pcWrongSettings) {
+						files = append(files, staleSettingsInfo{
+							path:          pcWrongSettings,
+							agentType:     "polecat",
+							rigName:       rigName,
+							sessionName:   fmt.Sprintf("gt-%s-%s", rigName, pcEntry.Name()),
+							wrongLocation: true,
+						})
+					}
 				}
 			}
 		}
@@ -477,14 +487,11 @@ func (c *ClaudeSettingsCheck) Fix(ctx *CheckContext) error {
 			}
 
 			// Town-root files were inherited by ALL agents via directory traversal.
-			// Cycle all Gas Town sessions so they pick up the corrected file locations.
-			// This includes gt-* (rig agents) and hq-* (mayor, deacon).
-			sessions, _ := t.ListSessions()
-			for _, sess := range sessions {
-				if strings.HasPrefix(sess, session.Prefix) || strings.HasPrefix(sess, session.HQPrefix) {
-					_ = t.KillSession(sess)
-				}
-			}
+			// Warn user to restart agents - don't auto-kill sessions as that's too disruptive,
+			// especially since deacon runs gt doctor automatically which would create a loop.
+			// Settings are only read at startup, so running agents already have config loaded.
+			fmt.Printf("\n  %s Town-root settings were moved. Restart agents to pick up new config:\n", style.Warning.Render("⚠"))
+			fmt.Printf("      gt up --restart\n\n")
 			continue
 		}
 

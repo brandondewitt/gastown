@@ -11,14 +11,18 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/beads"
+	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/claude"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/deps"
 	"github.com/steveyegge/gastown/internal/formula"
 	"github.com/steveyegge/gastown/internal/session"
+	"github.com/steveyegge/gastown/internal/shell"
+	"github.com/steveyegge/gastown/internal/state"
 	"github.com/steveyegge/gastown/internal/style"
 	"github.com/steveyegge/gastown/internal/templates"
 	"github.com/steveyegge/gastown/internal/workspace"
+	"github.com/steveyegge/gastown/internal/wrappers"
 )
 
 var (
@@ -30,6 +34,8 @@ var (
 	installGit        bool
 	installGitHub     string
 	installPublic     bool
+	installShell      bool
+	installWrappers   bool
 )
 
 var installCmd = &cobra.Command{
@@ -55,7 +61,8 @@ Examples:
   gt install ~/gt --no-beads                   # Skip .beads/ initialization
   gt install ~/gt --git                        # Also init git with .gitignore
   gt install ~/gt --github=user/repo           # Create private GitHub repo (default)
-  gt install ~/gt --github=user/repo --public  # Create public GitHub repo`,
+  gt install ~/gt --github=user/repo --public  # Create public GitHub repo
+  gt install ~/gt --shell                      # Install shell integration (sets GT_TOWN_ROOT/GT_RIG)`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runInstall,
 }
@@ -69,6 +76,8 @@ func init() {
 	installCmd.Flags().BoolVar(&installGit, "git", false, "Initialize git with .gitignore")
 	installCmd.Flags().StringVar(&installGitHub, "github", "", "Create GitHub repo (format: owner/repo, private by default)")
 	installCmd.Flags().BoolVar(&installPublic, "public", false, "Make GitHub repo public (use with --github)")
+	installCmd.Flags().BoolVar(&installShell, "shell", false, "Install shell integration (sets GT_TOWN_ROOT/GT_RIG env vars)")
+	installCmd.Flags().BoolVar(&installWrappers, "wrappers", false, "Install gt-codex/gt-opencode wrapper scripts to ~/bin/")
 	rootCmd.AddCommand(installCmd)
 }
 
@@ -260,6 +269,29 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		fmt.Printf("   ✓ Created .claude/commands/ (slash commands for all agents)\n")
 	}
 
+	if installShell {
+		fmt.Println()
+		if err := shell.Install(); err != nil {
+			fmt.Printf("   %s Could not install shell integration: %v\n", style.Dim.Render("⚠"), err)
+		} else {
+			fmt.Printf("   ✓ Installed shell integration (%s)\n", shell.RCFilePath(shell.DetectShell()))
+		}
+		if err := state.Enable(Version); err != nil {
+			fmt.Printf("   %s Could not enable Gas Town: %v\n", style.Dim.Render("⚠"), err)
+		} else {
+			fmt.Printf("   ✓ Enabled Gas Town globally\n")
+		}
+	}
+
+	if installWrappers {
+		fmt.Println()
+		if err := wrappers.Install(); err != nil {
+			fmt.Printf("   %s Could not install wrapper scripts: %v\n", style.Dim.Render("⚠"), err)
+		} else {
+			fmt.Printf("   ✓ Installed gt-codex and gt-opencode to %s\n", wrappers.BinDir())
+		}
+	}
+
 	fmt.Printf("\n%s HQ created successfully!\n", style.Bold.Render("✓"))
 	fmt.Println()
 	fmt.Println("Next steps:")
@@ -313,12 +345,28 @@ func initTownBeads(townPath string) error {
 		}
 	}
 
+	// Configure custom types for Gas Town (agent, role, rig, convoy, slot).
+	// These were extracted from beads core in v0.46.0 and now require explicit config.
+	configCmd := exec.Command("bd", "config", "set", "types.custom", constants.BeadsCustomTypes)
+	configCmd.Dir = townPath
+	if configOutput, configErr := configCmd.CombinedOutput(); configErr != nil {
+		// Non-fatal: older beads versions don't need this, newer ones do
+		fmt.Printf("   %s Could not set custom types: %s\n", style.Dim.Render("⚠"), strings.TrimSpace(string(configOutput)))
+	}
+
 	// Ensure database has repository fingerprint (GH #25).
 	// This is idempotent - safe on both new and legacy (pre-0.17.5) databases.
 	// Without fingerprint, the bd daemon fails to start silently.
 	if err := ensureRepoFingerprint(townPath); err != nil {
 		// Non-fatal: fingerprint is optional for functionality, just daemon optimization
 		fmt.Printf("   %s Could not verify repo fingerprint: %v\n", style.Dim.Render("⚠"), err)
+	}
+
+	// Ensure routes.jsonl has an explicit town-level mapping for hq-* beads.
+	// This keeps hq-* operations stable even when invoked from rig worktrees.
+	if err := beads.AppendRoute(townPath, beads.Route{Prefix: "hq-", Path: "."}); err != nil {
+		// Non-fatal: routing still works in many contexts, but explicit mapping is preferred.
+		fmt.Printf("   %s Could not update routes.jsonl: %v\n", style.Dim.Render("⚠"), err)
 	}
 
 	return nil
@@ -333,6 +381,20 @@ func ensureRepoFingerprint(beadsPath string) error {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("bd migrate --update-repo-id: %s", strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+// ensureCustomTypes registers Gas Town custom issue types with beads.
+// Beads core only supports built-in types (bug, feature, task, etc.).
+// Gas Town needs custom types: agent, role, rig, convoy, slot.
+// This is idempotent - safe to call multiple times.
+func ensureCustomTypes(beadsPath string) error {
+	cmd := exec.Command("bd", "config", "set", "types.custom", constants.BeadsCustomTypes)
+	cmd.Dir = beadsPath
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("bd config set types.custom: %s", strings.TrimSpace(string(output)))
 	}
 	return nil
 }
@@ -357,6 +419,13 @@ func ensureRepoFingerprint(beadsPath string) error {
 // agents can function without their role bead existing.
 func initTownAgentBeads(townPath string) error {
 	bd := beads.New(townPath)
+
+	// bd init doesn't enable "custom" issue types by default, but Gas Town uses
+	// agent/role beads during install and runtime. Ensure these types are enabled
+	// before attempting to create any town-level system beads.
+	if err := ensureBeadsCustomTypes(townPath, []string{"agent", "role", "rig", "convoy", "slot"}); err != nil {
+		return err
+	}
 
 	// Role beads (global templates)
 	roleDefs := []struct {
@@ -474,5 +543,19 @@ func initTownAgentBeads(townPath string) error {
 		fmt.Printf("   ✓ Created agent bead: %s\n", agent.id)
 	}
 
+	return nil
+}
+
+func ensureBeadsCustomTypes(workDir string, types []string) error {
+	if len(types) == 0 {
+		return nil
+	}
+
+	cmd := exec.Command("bd", "config", "set", "types.custom", strings.Join(types, ","))
+	cmd.Dir = workDir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("bd config set types.custom failed: %s", strings.TrimSpace(string(output)))
+	}
 	return nil
 }

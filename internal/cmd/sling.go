@@ -210,16 +210,23 @@ func runSling(cmd *cobra.Command, args []string) error {
 
 		// Try as bead first
 		if err := verifyBeadExists(firstArg); err == nil {
-			// It's a bead
+			// It's a verified bead
 			beadID = firstArg
 		} else {
-			// Not a bead - try as standalone formula
+			// Not a verified bead - try as standalone formula
 			if err := verifyFormulaExists(firstArg); err == nil {
 				// Standalone formula mode: gt sling <formula> [target]
 				return runSlingFormula(args)
 			}
-			// Neither bead nor formula
-			return fmt.Errorf("'%s' is not a valid bead or formula", firstArg)
+			// Not a formula either - check if it looks like a bead ID (routing issue workaround).
+			// Accept it and let the actual bd update fail later if the bead doesn't exist.
+			// This fixes: gt sling bd-ka761 beads/crew/dave failing with 'not a valid bead or formula'
+			if looksLikeBeadID(firstArg) {
+				beadID = firstArg
+			} else {
+				// Neither bead nor formula
+				return fmt.Errorf("'%s' is not a valid bead or formula", firstArg)
+			}
 		}
 	}
 
@@ -387,8 +394,14 @@ func runSling(cmd *cobra.Command, args []string) error {
 	if formulaName != "" {
 		fmt.Printf("  Instantiating formula %s...\n", formulaName)
 
+		// Route bd mutations (cook/wisp/bond) to the correct beads context for the target bead.
+		// Some bd mol commands don't support prefix routing, so we must run them from the
+		// rig directory that owns the bead's database.
+		formulaWorkDir := beads.ResolveHookDir(townRoot, beadID, hookWorkDir)
+
 		// Step 1: Cook the formula (ensures proto exists)
 		cookCmd := exec.Command("bd", "--no-daemon", "cook", formulaName)
+		cookCmd.Dir = formulaWorkDir
 		cookCmd.Stderr = os.Stderr
 		if err := cookCmd.Run(); err != nil {
 			return fmt.Errorf("cooking formula %s: %w", formulaName, err)
@@ -398,6 +411,7 @@ func runSling(cmd *cobra.Command, args []string) error {
 		featureVar := fmt.Sprintf("feature=%s", info.Title)
 		wispArgs := []string{"--no-daemon", "mol", "wisp", formulaName, "--var", featureVar, "--json"}
 		wispCmd := exec.Command("bd", wispArgs...)
+		wispCmd.Dir = formulaWorkDir
 		wispCmd.Stderr = os.Stderr
 		wispOut, err := wispCmd.Output()
 		if err != nil {
@@ -415,6 +429,7 @@ func runSling(cmd *cobra.Command, args []string) error {
 		// Use --no-daemon for mol bond (requires direct database access)
 		bondArgs := []string{"--no-daemon", "mol", "bond", wispRootID, beadID, "--json"}
 		bondCmd := exec.Command("bd", bondArgs...)
+		bondCmd.Dir = formulaWorkDir
 		bondCmd.Stderr = os.Stderr
 		bondOut, err := bondCmd.Output()
 		if err != nil {
@@ -503,7 +518,7 @@ func runSling(cmd *cobra.Command, args []string) error {
 // This enables no-tmux mode where agents discover args via gt prime / bd show.
 func storeArgsInBead(beadID, args string) error {
 	// Get the bead to preserve existing description content
-	showCmd := exec.Command("bd", "--no-daemon", "show", beadID, "--json")
+	showCmd := exec.Command("bd", "--no-daemon", "show", beadID, "--json", "--allow-stale")
 	out, err := showCmd.Output()
 	if err != nil {
 		return fmt.Errorf("fetching bead: %w", err)
@@ -712,8 +727,12 @@ func sessionToAgentID(sessionName string) string {
 // verifyBeadExists checks that the bead exists using bd show.
 // Uses bd's native prefix-based routing via routes.jsonl - do NOT set BEADS_DIR
 // as that overrides routing and breaks resolution of rig-level beads.
+//
+// Uses --no-daemon with --allow-stale to avoid daemon socket timing issues
+// while still finding beads when database is out of sync with JSONL.
+// For existence checks, stale data is acceptable - we just need to know it exists.
 func verifyBeadExists(beadID string) error {
-	cmd := exec.Command("bd", "--no-daemon", "show", beadID, "--json")
+	cmd := exec.Command("bd", "--no-daemon", "show", beadID, "--json", "--allow-stale")
 	// Run from town root so bd can find routes.jsonl for prefix-based routing.
 	// Do NOT set BEADS_DIR - that overrides routing and breaks rig bead resolution.
 	if townRoot, err := workspace.FindFromCwd(); err == nil {
@@ -734,8 +753,9 @@ type beadInfo struct {
 
 // getBeadInfo returns status and assignee for a bead.
 // Uses bd's native prefix-based routing via routes.jsonl.
+// Uses --no-daemon with --allow-stale for consistency with verifyBeadExists.
 func getBeadInfo(beadID string) (*beadInfo, error) {
-	cmd := exec.Command("bd", "--no-daemon", "show", beadID, "--json")
+	cmd := exec.Command("bd", "--no-daemon", "show", beadID, "--json", "--allow-stale")
 	// Run from town root so bd can find routes.jsonl for prefix-based routing.
 	if townRoot, err := workspace.FindFromCwd(); err == nil {
 		cmd.Dir = townRoot
@@ -806,15 +826,16 @@ func resolveSelfTarget() (agentID string, pane string, hookRoot string, err erro
 
 // verifyFormulaExists checks that the formula exists using bd formula show.
 // Formulas are TOML files (.formula.toml).
+// Uses --no-daemon with --allow-stale for consistency with verifyBeadExists.
 func verifyFormulaExists(formulaName string) error {
 	// Try bd formula show (handles all formula file formats)
-	cmd := exec.Command("bd", "--no-daemon", "formula", "show", formulaName)
+	cmd := exec.Command("bd", "--no-daemon", "formula", "show", formulaName, "--allow-stale")
 	if err := cmd.Run(); err == nil {
 		return nil
 	}
 
 	// Try with mol- prefix
-	cmd = exec.Command("bd", "--no-daemon", "formula", "show", "mol-"+formulaName)
+	cmd = exec.Command("bd", "--no-daemon", "formula", "show", "mol-"+formulaName, "--allow-stale")
 	if err := cmd.Run(); err == nil {
 		return nil
 	}
