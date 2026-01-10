@@ -8,12 +8,16 @@
   --color-gray: #6B7280;       /* Gray - Dim */
 
   /* Dark theme (default) */
+  --color-background: #0f172a;
   --color-bg: #0f172a;
   --color-surface: #1e293b;
   --color-surface-raised: #334155;
   --color-border: #334155;
   --color-text: #f1f5f9;
   --color-text-muted: #94a3b8;
+
+  /* Accent colors */
+  --color-accent-amber: #d97706;  /* Industrial amber - echoes gas lamps */
 
   /* Agent role colors */
   --color-mayor: #a855f7;      /* Purple */
@@ -48,12 +52,14 @@
 /* Light theme */
 @media (prefers-color-scheme: light) {
   :root {
+    --color-background: #f8fafc;
     --color-bg: #f8fafc;
     --color-surface: #ffffff;
     --color-surface-raised: #f1f5f9;
     --color-border: #e2e8f0;
     --color-text: #0f172a;
     --color-text-muted: #64748b;
+    --color-accent-amber: #b45309;  /* Darker amber for light theme */
   }
 }
 
