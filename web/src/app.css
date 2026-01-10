@@ -1,4 +1,4 @@
-/* Gas Town Dashboard - CSS Custom Properties */
+/* Gas Town Command Center - Industrial Steampunk Aesthetic */
 :root {
   /* TUI-matched color palette */
   --color-primary: #3B82F6;    /* Blue - Info */
@@ -8,12 +8,12 @@
   --color-gray: #6B7280;       /* Gray - Dim */
 
   /* Dark theme (default) */
-  --color-bg: #0f172a;
-  --color-surface: #1e293b;
-  --color-surface-raised: #334155;
-  --color-border: #334155;
-  --color-text: #f1f5f9;
-  --color-text-muted: #94a3b8;
+  --color-bg: #0a0e27;
+  --color-surface: #15192d;
+  --color-surface-raised: #1f2847;
+  --color-border: #2a3a5a;
+  --color-text: #e8ecf4;
+  --color-text-muted: #8494b6;
 
   /* Agent role colors */
   --color-mayor: #a855f7;      /* Purple */
@@ -22,6 +22,11 @@
   --color-refinery: #10b981;   /* Emerald */
   --color-polecat: #3b82f6;    /* Blue */
   --color-crew: #8b5cf6;       /* Violet */
+
+  /* Steampunk accents */
+  --color-brass: #d4af37;
+  --color-copper: #b87333;
+  --color-steam: #64748b;
 
   /* Spacing */
   --space-1: 0.25rem;
@@ -36,9 +41,9 @@
   --radius-md: 0.5rem;
   --radius-lg: 0.75rem;
 
-  /* Fonts */
-  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-  --font-mono: 'SF Mono', Monaco, 'Cascadia Code', 'Consolas', monospace;
+  /* Fonts - Monospace for industrial command terminal feel */
+  --font-sans: 'Courier New', Courier, monospace, -apple-system, BlinkMacSystemFont, 'Segoe UI';
+  --font-mono: 'IBM Plex Mono', 'Courier New', 'SF Mono', Monaco, 'Cascadia Code', 'Consolas', monospace;
 
   /* Transitions */
   --transition-fast: 150ms ease;
