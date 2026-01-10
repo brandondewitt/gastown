@@ -1,12 +1,10 @@
 package handlers
 
 import (
-	"encoding/json"
 	"net/http"
 	"strings"
 
 	"github.com/gorilla/mux"
-	"github.com/steveyegge/gastown/internal/tmux"
 	"github.com/steveyegge/gastown/internal/web/api"
 )
 
@@ -84,62 +82,4 @@ func (h *AgentsHandler) Get(w http.ResponseWriter, r *http.Request) {
 	}
 
 	api.NotFound(w, "agent not found: "+address)
-}
-
-// GetOutput returns recent terminal output for an agent's tmux session.
-func (h *AgentsHandler) GetOutput(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	address := vars["address"]
-
-	// Convert address to session name: "gastown/toast" -> "gt-gastown-toast"
-	sessionName := "gt-" + strings.ReplaceAll(address, "/", "-")
-
-	t := tmux.NewTmux()
-	output, err := t.CapturePane(sessionName, 100)
-	if err != nil {
-		api.WriteJSON(w, map[string]interface{}{
-			"output":  "",
-			"error":   err.Error(),
-			"session": sessionName,
-		})
-		return
-	}
-
-	api.WriteJSON(w, map[string]interface{}{
-		"output":  output,
-		"session": sessionName,
-	})
-}
-
-// SendMessageRequest is the request body for sending a message to an agent.
-type SendMessageRequest struct {
-	Message string `json:"message"`
-}
-
-// SendMessage sends a message to an agent's tmux session.
-func (h *AgentsHandler) SendMessage(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	address := vars["address"]
-
-	var req SendMessageRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		api.BadRequest(w, "invalid request: "+err.Error())
-		return
-	}
-
-	if req.Message == "" {
-		api.BadRequest(w, "message is required")
-		return
-	}
-
-	// Convert address to session name: "gastown/toast" -> "gt-gastown-toast"
-	sessionName := "gt-" + strings.ReplaceAll(address, "/", "-")
-
-	t := tmux.NewTmux()
-	if err := t.NudgeSession(sessionName, req.Message); err != nil {
-		api.InternalError(w, "failed to send message: "+err.Error())
-		return
-	}
-
-	api.WriteJSON(w, map[string]bool{"success": true})
 }

@@ -1,17 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import './app.css';
-  import MergeQueue from './lib/MergeQueue.svelte';
-  import ActivityFeed from './lib/ActivityFeed.svelte';
-  import SlingDialog from './lib/SlingDialog.svelte';
-  import ConvoyCreator from './lib/ConvoyCreator.svelte';
-  import IssueCreator from './lib/IssueCreator.svelte';
-  import IssuesList from './lib/IssuesList.svelte';
-  import MailComposer from './lib/MailComposer.svelte';
-  import AgentSidebar from './lib/AgentSidebar.svelte';
-  import TerminalOutput from './lib/TerminalOutput.svelte';
-  import MessageInput from './lib/MessageInput.svelte';
-  import AgentContext from './lib/AgentContext.svelte';
 
   // Types
   interface Agent {
@@ -63,67 +52,14 @@
     summary: Summary;
   }
 
-  interface MailMessage {
-    id: string;
-    from: string;
-    to: string;
-    subject: string;
-    body: string;
-    timestamp: string;
-    read: boolean;
-    priority: string;
-    type: string;
-    thread_id?: string;
-    reply_to?: string;
-    pinned?: boolean;
-    cc?: string[];
-  }
-
-  // State
-  let status: TownStatus | null = $state(null);
-  let loading = $state(true);
-  let error: string | null = $state(null);
-  let activeTab: 'dashboard' | 'issues' | 'mail' = $state('dashboard');
-  let theme: 'dark' | 'light' = $state('dark');
-  let selectedAgent: Agent | null = $state(null);
-  let sidebarOpen = $state(true);
-  let contextOpen = $state(true);
-
-  // Mail state
-  let mailMessages: MailMessage[] = $state([]);
-  let mailLoading = $state(false);
-  let mailError: string | null = $state(null);
-  let selectedMessage: MailMessage | null = $state(null);
-  let mailCount = $state({ total: 0, unread: 0 });
-
-  // Dialog state
-  let showCreateMenu = $state(false);
-  let showSlingDialog = $state(false);
-  let showConvoyCreator = $state(false);
-  let showIssueCreator = $state(false);
-  let slingIssueId = $state('');
-  let showMailComposer = $state(false);
-
-  // Theme handling
-  function initTheme() {
-    const saved = localStorage.getItem('gt-theme');
-    if (saved === 'light' || saved === 'dark') {
-      theme = saved;
-    } else if (window.matchMedia('(prefers-color-scheme: light)').matches) {
-      theme = 'light';
-    }
-    applyTheme();
-  }
-
-  function toggleTheme() {
-    theme = theme === 'dark' ? 'light' : 'dark';
-    localStorage.setItem('gt-theme', theme);
-    applyTheme();
-  }
-
-  function applyTheme() {
-    document.documentElement.setAttribute('data-theme', theme);
-  }
+  let status: TownStatus | null = null;
+  let loading = true;
+  let error: string | null = null;
+  let selectedAgent: Agent | null = null;
+  let mayorAgent: Agent | null = null;
+  let viewMode: 'chat' | 'dashboard' = 'chat';
+  let sidebarOpen = true;
+  let expandedRigs: Set<string> = new Set();
 
   async function fetchStatus() {
     try {
@@ -132,6 +68,24 @@
       if (data.success) {
         status = data.data;
         error = null;
+
+        // Create a virtual Mayor agent from overseer data
+        if (status.overseer) {
+          mayorAgent = {
+            name: status.overseer.name || 'Mayor',
+            address: 'mayor',
+            session: 'global',
+            role: 'mayor',
+            running: true,
+            has_work: false,
+            unread_mail: status.overseer.unread_mail || 0,
+          };
+
+          // Auto-select Mayor on first load
+          if (!selectedAgent) {
+            selectedAgent = mayorAgent;
+          }
+        }
       } else {
         error = data.error?.message || 'Unknown error';
       }
@@ -142,90 +96,11 @@
     }
   }
 
-  async function fetchMail() {
-    mailLoading = true;
-    mailError = null;
-    try {
-      const [messagesRes, countRes] = await Promise.all([
-        fetch('/api/v1/mail'),
-        fetch('/api/v1/mail/count')
-      ]);
-
-      const messagesData = await messagesRes.json();
-      const countData = await countRes.json();
-
-      if (messagesData.success) {
-        mailMessages = messagesData.data || [];
-      } else {
-        mailError = messagesData.error?.message || 'Failed to load messages';
-      }
-
-      if (countData.success) {
-        mailCount = countData.data;
-      }
-    } catch (e) {
-      mailError = e instanceof Error ? e.message : 'Failed to fetch mail';
-    } finally {
-      mailLoading = false;
-    }
-  }
-
-  async function markAsRead(id: string) {
-    try {
-      await fetch(`/api/v1/mail/${id}/read`, { method: 'POST' });
-      // Refresh mail list
-      await fetchMail();
-    } catch (e) {
-      console.error('Failed to mark as read:', e);
-    }
-  }
-
-  function selectMessage(msg: MailMessage) {
-    selectedMessage = msg;
-    if (!msg.read) {
-      markAsRead(msg.id);
-    }
-  }
-
-  function formatDate(timestamp: string): string {
-    const date = new Date(timestamp);
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffMins = Math.floor(diffMs / 60000);
-    const diffHours = Math.floor(diffMs / 3600000);
-    const diffDays = Math.floor(diffMs / 86400000);
-
-    if (diffMins < 1) return 'just now';
-    if (diffMins < 60) return `${diffMins}m ago`;
-    if (diffHours < 24) return `${diffHours}h ago`;
-    if (diffDays < 7) return `${diffDays}d ago`;
-    return date.toLocaleDateString();
-  }
-
-  function getPriorityClass(priority: string): string {
-    const classes: Record<string, string> = {
-      urgent: 'priority-urgent',
-      high: 'priority-high',
-      normal: 'priority-normal',
-      low: 'priority-low',
-    };
-    return classes[priority] || 'priority-normal';
-  }
-
   onMount(() => {
-    initTheme();
     fetchStatus();
-    fetchMail();
-
-    // Refresh status every 5 seconds
-    const statusInterval = setInterval(fetchStatus, 5000);
-    // Refresh mail every 30 seconds
-    const mailInterval = setInterval(fetchMail, 30000);
-
-    return () => {
-      clearInterval(statusInterval);
-      clearInterval(mailInterval);
-    };
+    // Refresh every 5 seconds
+    const interval = setInterval(fetchStatus, 5000);
+    return () => clearInterval(interval);
   });
 
   function getRoleIcon(role: string): string {
@@ -252,398 +127,268 @@
     return colors[role] || 'var(--color-gray)';
   }
 
-  function handleDispatchFromIssues(issueId: string) {
-    slingIssueId = issueId;
-    showSlingDialog = true;
-  }
-
-  function handleAgentSelect(agent: Agent) {
+  function selectAgent(agent: Agent) {
     selectedAgent = agent;
-    // Clear tab selection when agent is selected
-    activeTab = 'dashboard';
-    // Close sidebar on mobile after selection
-    if (window.innerWidth < 768) {
-      sidebarOpen = false;
-    }
+    viewMode = 'chat';
   }
 
-  function toggleSidebar() {
-    sidebarOpen = !sidebarOpen;
+  function toggleRig(rigName: string) {
+    if (expandedRigs.has(rigName)) {
+      expandedRigs.delete(rigName);
+    } else {
+      expandedRigs.add(rigName);
+    }
+    expandedRigs = expandedRigs;
   }
 </script>
 
 <div class="app">
   <header class="header">
-    <div class="header-left">
-      <button class="sidebar-toggle" onclick={toggleSidebar} title="Toggle sidebar">
-        ☰
-      </button>
-      <div class="logo">
-        <span class="logo-icon">⛽</span>
-        <h1>Gas Town</h1>
-      </div>
-      <nav class="nav-tabs">
-        <button
-          class="nav-tab"
-          class:active={activeTab === 'dashboard' && !selectedAgent}
-          onclick={() => { activeTab = 'dashboard'; selectedAgent = null; }}
-        >
-          Dashboard
-        </button>
-        <button
-          class="nav-tab"
-          class:active={activeTab === 'issues'}
-          onclick={() => { activeTab = 'issues'; selectedAgent = null; }}
-        >
-          Issues
-        </button>
-        <button
-          class="nav-tab"
-          class:active={activeTab === 'mail'}
-          onclick={() => { activeTab = 'mail'; selectedAgent = null; fetchMail(); }}
-        >
-          Mail
-          {#if mailCount.unread > 0}
-            <span class="mail-badge">{mailCount.unread}</span>
-          {/if}
-        </button>
-      </nav>
+    <button class="sidebar-toggle" on:click={() => sidebarOpen = !sidebarOpen} aria-label="Toggle sidebar">
+      <span class="toggle-icon">☰</span>
+    </button>
+    <div class="logo">
+      <span class="logo-icon">⛽</span>
+      <h1>Gas Town</h1>
     </div>
-    <div class="header-right">
-      <div class="create-dropdown">
-        <button class="btn btn-primary create-btn" onclick={() => showCreateMenu = !showCreateMenu}>
-          + Create
-        </button>
-        {#if showCreateMenu}
-          <div class="create-menu">
-            <button onclick={() => { showCreateMenu = false; showIssueCreator = true; }}>
-              📝 New Issue
-            </button>
-            <button onclick={() => { showCreateMenu = false; slingIssueId = ''; showSlingDialog = true; }}>
-              🚀 Dispatch Work
-            </button>
-            <button onclick={() => { showCreateMenu = false; showConvoyCreator = true; }}>
-              📦 New Convoy
-            </button>
-          </div>
-        {/if}
-      </div>
-      {#if status}
+    {#if status}
+      <div class="header-info">
         <span class="town-name">{status.name}</span>
-      {/if}
-      <button class="theme-toggle" onclick={toggleTheme} title="Toggle theme">
-        {#if theme === 'dark'}
-          <span class="theme-icon">☀️</span>
-        {:else}
-          <span class="theme-icon">🌙</span>
+        {#if status.overseer}
+          <span class="overseer">
+            <span class="overseer-label">{status.overseer.name}</span>
+            {#if status.overseer.unread_mail > 0}
+              <span class="mail-badge">{status.overseer.unread_mail}</span>
+            {/if}
+          </span>
         {/if}
-      </button>
-    </div>
+      </div>
+    {/if}
   </header>
 
-  <div class="app-layout">
-    <!-- Agent Sidebar -->
-    {#if sidebarOpen}
-      <AgentSidebar
-        globalAgents={status?.agents || []}
-        rigs={status?.rigs || []}
-        {selectedAgent}
-        onSelect={handleAgentSelect}
-      />
-      <!-- Mobile backdrop -->
-      <button
-        class="sidebar-backdrop"
-        onclick={() => sidebarOpen = false}
-        aria-label="Close sidebar"
-      ></button>
-    {/if}
-
-    <main class="main">
-      <!-- Selected Agent View -->
-      {#if selectedAgent}
-        <div class="agent-workspace">
-          <div class="workspace-main">
-            <div class="agent-header">
-              <div class="agent-header-left">
-                <h2>{getRoleIcon(selectedAgent.role)} {selectedAgent.name}</h2>
-                <span class="agent-role">{selectedAgent.role}</span>
-                <span class="status-badge" class:running={selectedAgent.running}>
-                  {selectedAgent.running ? 'Running' : 'Stopped'}
-                </span>
-              </div>
-              <button class="context-toggle" onclick={() => contextOpen = !contextOpen} title="Toggle context panel">
-                {contextOpen ? '→' : '←'} Context
-              </button>
-            </div>
-            {#if selectedAgent.has_work && selectedAgent.work_title}
-              <div class="current-work-banner">
-                <span class="work-label">Working on:</span>
-                <span class="work-id">{selectedAgent.hook_bead}</span>
-                <span class="work-title-text">{selectedAgent.work_title}</span>
-              </div>
-            {/if}
-            <div class="agent-content">
-              <!-- Terminal Output -->
-              <TerminalOutput agentAddress={selectedAgent.address} />
-
-              <!-- Message Input -->
-              <MessageInput
-                agentAddress={selectedAgent.address}
-                disabled={!selectedAgent.running}
-                placeholder="Send a message to {selectedAgent.name}..."
-              />
-            </div>
-          </div>
-
-          <!-- Context Panel -->
-          {#if contextOpen}
-            <AgentContext
-              agent={selectedAgent}
-              onDispatchWork={() => { slingIssueId = ''; showSlingDialog = true; }}
-              onSendMail={() => showMailComposer = true}
-              onClose={() => contextOpen = false}
-            />
-          {/if}
+  <div class="container">
+    <!-- Sidebar -->
+    <aside class="sidebar" class:open={sidebarOpen}>
+      {#if loading}
+        <div class="sidebar-loading">
+          <div class="spinner"></div>
         </div>
-      {:else if activeTab === 'dashboard'}
-        {#if loading}
+      {:else if error}
+        <div class="sidebar-error">
+          <p>Error loading agents</p>
+        </div>
+      {:else if status}
+        <!-- Mayor Section -->
+        {#if mayorAgent}
+          <div class="sidebar-section mayor-section">
+            <button
+              class="agent-button mayor-button"
+              class:selected={selectedAgent?.address === mayorAgent.address}
+              on:click={() => selectAgent(mayorAgent)}
+            >
+              <div class="agent-button-content">
+                <span class="agent-icon mayor-icon">{getRoleIcon(mayorAgent.role)}</span>
+                <div class="agent-info">
+                  <div class="agent-name">Mayor</div>
+                  <div class="agent-status-line">
+                    <span class="status-dot" class:running={mayorAgent.running}></span>
+                    <span class="status-text">{mayorAgent.running ? 'Online' : 'Offline'}</span>
+                  </div>
+                </div>
+              </div>
+              {#if mayorAgent.unread_mail > 0}
+                <span class="mail-badge">{mayorAgent.unread_mail}</span>
+              {/if}
+            </button>
+          </div>
+        {/if}
+
+        <!-- Rigs & Agents -->
+        <div class="sidebar-section agents-section">
+          <h2 class="section-title">Agents</h2>
+          {#each status.rigs ?? [] as rig}
+            <div class="rig-group">
+              <button
+                class="rig-header-button"
+                on:click={() => toggleRig(rig.name)}
+              >
+                <span class="rig-toggle">{expandedRigs.has(rig.name) ? '▼' : '▶'}</span>
+                <span class="rig-name">{rig.name}</span>
+                <span class="rig-badge">({rig.polecat_count})</span>
+              </button>
+              {#if expandedRigs.has(rig.name) && rig.agents}
+                <div class="agents-list">
+                  {#each rig.agents as agent}
+                    <button
+                      class="agent-button"
+                      class:selected={selectedAgent?.address === agent.address}
+                      on:click={() => selectAgent(agent)}
+                    >
+                      <div class="agent-button-content">
+                        <span class="agent-icon" style="color: {getRoleColor(agent.role)}">
+                          {getRoleIcon(agent.role)}
+                        </span>
+                        <div class="agent-info">
+                          <div class="agent-name">{agent.name}</div>
+                          <div class="agent-status-line">
+                            <span class="status-dot" class:running={agent.running} class:working={agent.has_work}></span>
+                            <span class="status-text">
+                              {#if agent.has_work}
+                                Working
+                              {:else if agent.running}
+                                Online
+                              {:else}
+                                Offline
+                              {/if}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                      {#if agent.unread_mail > 0}
+                        <span class="mail-badge">{agent.unread_mail}</span>
+                      {/if}
+                    </button>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content">
+      {#if loading}
         <div class="loading">
           <div class="spinner"></div>
           <p>Loading town status...</p>
         </div>
       {:else if error}
         <div class="error-container">
-          <div class="error-icon">⚠️</div>
-          <p class="error-text">{error}</p>
-          <button class="btn btn-primary" onclick={fetchStatus}>Retry</button>
+          <p class="text-error">Error: {error}</p>
+          <button on:click={fetchStatus}>Retry</button>
         </div>
       {:else if status}
-        <!-- Summary Cards -->
-        <section class="summary-grid">
-          <div class="card summary-card">
-            <div class="summary-value">{status.summary.rig_count}</div>
-            <div class="summary-label">Rigs</div>
-          </div>
-          <div class="card summary-card">
-            <div class="summary-value">{status.summary.polecat_count}</div>
-            <div class="summary-label">Polecats</div>
-          </div>
-          <div class="card summary-card">
-            <div class="summary-value">{status.summary.crew_count}</div>
-            <div class="summary-label">Crews</div>
-          </div>
-          <div class="card summary-card">
-            <div class="summary-value">{status.summary.active_hooks}</div>
-            <div class="summary-label">Active Hooks</div>
-          </div>
-        </section>
+        <!-- View Selector -->
+        <div class="view-selector">
+          <button
+            class="view-button"
+            class:active={viewMode === 'chat'}
+            on:click={() => viewMode = 'chat'}
+          >
+            💬 Chat
+          </button>
+          <button
+            class="view-button"
+            class:active={viewMode === 'dashboard'}
+            on:click={() => viewMode = 'dashboard'}
+          >
+            📊 Dashboard
+          </button>
+        </div>
 
-        <!-- Global Agents -->
-        {#if status.agents?.length > 0}
-          <section class="card">
-            <h2 class="card-header">Global Agents</h2>
-            <div class="agent-list">
-              {#each status.agents as agent}
-                <div class="agent-item">
-                  <span class="agent-icon" style="color: {getRoleColor(agent.role)}">
-                    {getRoleIcon(agent.role)}
+        {#if viewMode === 'chat'}
+          <!-- Chat View -->
+          <div class="chat-container">
+            {#if selectedAgent}
+              <div class="chat-header">
+                <div class="chat-header-content">
+                  <span class="chat-icon" style="color: {getRoleColor(selectedAgent.role)}">
+                    {getRoleIcon(selectedAgent.role)}
                   </span>
-                  <span class="agent-name">{agent.name}</span>
-                  <span class="status-dot" class:running={agent.running} class:stopped={!agent.running}></span>
-                  {#if agent.unread_mail > 0}
-                    <span class="mail-badge small">{agent.unread_mail}</span>
-                  {/if}
-                </div>
-              {/each}
-            </div>
-          </section>
-        {/if}
-
-        <!-- Rigs -->
-        <section class="rigs-section">
-          <h2 class="section-header">Rigs</h2>
-          <div class="rigs-grid">
-            {#each status.rigs ?? [] as rig}
-              <div class="card rig-card">
-                <div class="rig-header">
-                  <h3 class="rig-name">{rig.name}</h3>
-                  <div class="rig-services">
-                    {#if rig.has_witness}
-                      <span class="service-badge" title="Witness">👀</span>
-                    {/if}
-                    {#if rig.has_refinery}
-                      <span class="service-badge" title="Refinery">⚙️</span>
-                    {/if}
+                  <div class="chat-header-info">
+                    <h2 class="chat-title">
+                      {selectedAgent.role === 'mayor' ? 'Mayor' : selectedAgent.name}
+                    </h2>
+                    <p class="chat-subtitle">
+                      {selectedAgent.running ? '🟢 Online' : '⚫ Offline'}
+                      {#if selectedAgent.has_work}
+                        · Working on task
+                      {/if}
+                    </p>
                   </div>
                 </div>
-                <p class="rig-path mono text-muted">{rig.path}</p>
-                <div class="rig-stats">
-                  <span>{rig.polecat_count} polecats</span>
-                  <span>{rig.crew_count} crews</span>
+                {#if selectedAgent.unread_mail > 0}
+                  <div class="mail-indicator">
+                    <span class="mail-count">{selectedAgent.unread_mail}</span>
+                    <span class="mail-label">unread</span>
+                  </div>
+                {/if}
+              </div>
+
+              <div class="chat-content">
+                <div class="message-placeholder">
+                  <p>Chat interface coming soon</p>
+                  <p class="text-muted">Messages with {selectedAgent.name} will appear here</p>
                 </div>
-                {#if rig.agents && rig.agents.length > 0}
-                  <div class="rig-agents">
-                    {#each rig.agents as agent}
-                      <div class="agent-row">
-                        <span class="agent-icon small" style="color: {getRoleColor(agent.role)}">
-                          {getRoleIcon(agent.role)}
-                        </span>
-                        <span class="agent-name">{agent.name}</span>
-                        <span class="status-dot" class:running={agent.running} class:working={agent.has_work}></span>
-                        {#if agent.has_work && agent.work_title}
-                          <span class="work-title mono">{agent.work_title}</span>
+              </div>
+
+              <div class="chat-input-area">
+                <input
+                  type="text"
+                  class="chat-input"
+                  placeholder="Type a message..."
+                  disabled
+                />
+                <button class="send-button" disabled>Send</button>
+              </div>
+            {/if}
+          </div>
+        {:else}
+          <!-- Dashboard View -->
+          <div class="dashboard-container">
+            <!-- Summary Cards -->
+            <section class="summary-grid">
+              <div class="summary-card">
+                <div class="summary-value">{status.summary.rig_count}</div>
+                <div class="summary-label">Rigs</div>
+              </div>
+              <div class="summary-card">
+                <div class="summary-value">{status.summary.polecat_count}</div>
+                <div class="summary-label">Polecats</div>
+              </div>
+              <div class="summary-card">
+                <div class="summary-value">{status.summary.crew_count}</div>
+                <div class="summary-label">Crews</div>
+              </div>
+              <div class="summary-card">
+                <div class="summary-value">{status.summary.active_hooks}</div>
+                <div class="summary-label">Active Hooks</div>
+              </div>
+            </section>
+
+            <!-- Rigs Details -->
+            <section class="rigs-section">
+              <h2 class="section-header">Rig Details</h2>
+              <div class="rigs-grid">
+                {#each status.rigs ?? [] as rig}
+                  <div class="rig-card">
+                    <div class="rig-header-detail">
+                      <h3 class="rig-name">{rig.name}</h3>
+                      <div class="rig-services">
+                        {#if rig.has_witness}
+                          <span class="service-badge" title="Witness">👀</span>
+                        {/if}
+                        {#if rig.has_refinery}
+                          <span class="service-badge" title="Refinery">⚙️</span>
                         {/if}
                       </div>
-                    {/each}
+                    </div>
+                    <p class="rig-path">{rig.path}</p>
+                    <div class="rig-stats">
+                      <span><strong>{rig.polecat_count}</strong> polecats</span>
+                      <span><strong>{rig.crew_count}</strong> crews</span>
+                    </div>
                   </div>
-                {/if}
+                {/each}
               </div>
-            {/each}
+            </section>
           </div>
-        </section>
-
-        <!-- Merge Queue Section -->
-        <section class="card">
-          <h2 class="card-header">Merge Queue</h2>
-          <MergeQueue />
-        </section>
-
-        <!-- Activity Feed Section -->
-        <section class="card">
-          <h2 class="card-header">Recent Activity</h2>
-          <ActivityFeed />
-        </section>
+        {/if}
       {/if}
-    {:else if activeTab === 'issues'}
-      <div class="issues-view">
-        <IssuesList onDispatch={handleDispatchFromIssues} />
-      </div>
-    {:else if activeTab === 'mail'}
-      <div class="mail-container">
-        <div class="mail-list" class:has-selected={selectedMessage}>
-          <div class="mail-list-header">
-            <h2>Inbox</h2>
-            <div class="mail-list-actions">
-              <button class="btn btn-primary btn-sm" onclick={() => showMailComposer = true}>
-                + Compose
-              </button>
-              <button class="btn btn-icon" onclick={fetchMail} title="Refresh">
-                🔄
-              </button>
-            </div>
-          </div>
-          {#if mailLoading && mailMessages.length === 0}
-            <div class="loading-inline">
-              <div class="spinner small"></div>
-              <span>Loading messages...</span>
-            </div>
-          {:else if mailError}
-            <div class="error-inline">
-              <span>⚠️ {mailError}</span>
-              <button class="btn btn-sm" onclick={fetchMail}>Retry</button>
-            </div>
-          {:else if mailMessages.length === 0}
-            <div class="empty-state">
-              <span class="empty-icon">📭</span>
-              <p>No messages</p>
-            </div>
-          {:else}
-            <div class="mail-items">
-              {#each mailMessages as msg}
-                <button
-                  class="mail-item"
-                  class:unread={!msg.read}
-                  class:selected={selectedMessage?.id === msg.id}
-                  onclick={() => selectMessage(msg)}
-                >
-                  <div class="mail-item-header">
-                    <span class="mail-from">{msg.from}</span>
-                    <span class="mail-time">{formatDate(msg.timestamp)}</span>
-                  </div>
-                  <div class="mail-subject">
-                    {#if msg.pinned}
-                      <span class="pin-icon">📌</span>
-                    {/if}
-                    <span class={getPriorityClass(msg.priority)}>{msg.subject}</span>
-                  </div>
-                  <div class="mail-preview">{msg.body.slice(0, 80)}{msg.body.length > 80 ? '...' : ''}</div>
-                </button>
-              {/each}
-            </div>
-          {/if}
-        </div>
-
-        <div class="mail-detail" class:visible={selectedMessage}>
-          {#if selectedMessage}
-            <div class="mail-detail-header">
-              <button class="btn-back" onclick={() => selectedMessage = null}>
-                ← Back
-              </button>
-              <div class="mail-detail-meta">
-                <span class="badge {getPriorityClass(selectedMessage.priority)}">{selectedMessage.priority}</span>
-                <span class="badge">{selectedMessage.type}</span>
-              </div>
-            </div>
-            <div class="mail-detail-content">
-              <h2 class="mail-detail-subject">{selectedMessage.subject}</h2>
-              <div class="mail-detail-info">
-                <div><strong>From:</strong> {selectedMessage.from}</div>
-                <div><strong>To:</strong> {selectedMessage.to}</div>
-                <div><strong>Date:</strong> {new Date(selectedMessage.timestamp).toLocaleString()}</div>
-                {#if selectedMessage.cc && selectedMessage.cc.length > 0}
-                  <div><strong>CC:</strong> {selectedMessage.cc.join(', ')}</div>
-                {/if}
-              </div>
-              <div class="mail-detail-body">
-                <pre>{selectedMessage.body}</pre>
-              </div>
-            </div>
-          {:else}
-            <div class="empty-state">
-              <span class="empty-icon">📧</span>
-              <p>Select a message to read</p>
-            </div>
-          {/if}
-        </div>
-      </div>
-    {/if}
     </main>
   </div>
-
-  <footer class="footer">
-    <p class="text-muted">Gas Town Dashboard v0.1.1</p>
-  </footer>
-
-  <!-- Dialogs -->
-  <SlingDialog bind:isOpen={showSlingDialog} initialIssueId={slingIssueId} />
-
-  {#if showConvoyCreator}
-    <div class="modal-overlay" onclick={(e) => { if (e.target === e.currentTarget) showConvoyCreator = false; }}>
-      <div class="modal-content">
-        <ConvoyCreator onCreated={() => showConvoyCreator = false} />
-      </div>
-    </div>
-  {/if}
-
-  {#if showIssueCreator}
-    <div class="modal-overlay" onclick={(e) => { if (e.target === e.currentTarget) showIssueCreator = false; }}>
-      <div class="modal-content">
-        <IssueCreator onCreated={() => showIssueCreator = false} />
-      </div>
-    </div>
-  {/if}
-
-  {#if showMailComposer}
-    <div class="modal-overlay" onclick={(e) => { if (e.target === e.currentTarget) showMailComposer = false; }}>
-      <div class="modal-content">
-        <div class="composer-header">
-          <h3>New Message</h3>
-          <button class="close-btn" onclick={() => showMailComposer = false}>✕</button>
-        </div>
-        <MailComposer onSent={() => { showMailComposer = false; fetchMail(); }} />
-      </div>
-    </div>
-  {/if}
 </div>
 
 <style>
@@ -651,516 +396,591 @@
     display: flex;
     flex-direction: column;
     min-height: 100vh;
-  }
-
-  .app-layout {
-    display: flex;
-    flex: 1;
-    overflow: hidden;
-  }
-
-  .sidebar-toggle {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 2rem;
-    height: 2rem;
-    background: none;
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    cursor: pointer;
-    font-size: 1rem;
+    background-color: var(--color-background);
     color: var(--color-text);
-    transition: all var(--transition-fast);
-  }
-
-  .sidebar-toggle:hover {
-    background-color: var(--color-surface-raised);
-  }
-
-  /* Sidebar backdrop for mobile */
-  .sidebar-backdrop {
-    display: none;
-  }
-
-  @media (max-width: 768px) {
-    .sidebar-backdrop {
-      display: block;
-      position: fixed;
-      inset: 0;
-      background: rgba(0, 0, 0, 0.5);
-      z-index: 150;
-      border: none;
-      cursor: pointer;
-    }
-  }
-
-  /* Agent Workspace - 3 Column Layout */
-  .agent-workspace {
-    display: flex;
-    gap: var(--space-4);
-    height: calc(100vh - 180px);
-    min-height: 400px;
-  }
-
-  .workspace-main {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-4);
-    min-width: 0;
-    overflow: hidden;
-  }
-
-  .agent-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-3);
-    flex-wrap: wrap;
-  }
-
-  .agent-header-left {
-    display: flex;
-    align-items: center;
-    gap: var(--space-3);
-    flex-wrap: wrap;
-  }
-
-  .agent-header h2 {
-    font-size: 1.5rem;
-    font-weight: 600;
-    margin: 0;
-  }
-
-  .context-toggle {
-    display: flex;
-    align-items: center;
-    gap: var(--space-1);
-    padding: var(--space-2) var(--space-3);
-    background: var(--color-surface-raised);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    color: var(--color-text-muted);
-    font-size: 0.75rem;
-    cursor: pointer;
-    transition: all var(--transition-fast);
-  }
-
-  .context-toggle:hover {
-    background: var(--color-surface);
-    color: var(--color-text);
-  }
-
-  @media (max-width: 1024px) {
-    .agent-workspace {
-      flex-direction: column;
-      height: auto;
-    }
-  }
-
-  .agent-role {
-    padding: var(--space-1) var(--space-2);
-    background-color: var(--color-surface-raised);
-    border-radius: var(--radius-sm);
-    font-size: 0.75rem;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--color-text-muted);
-  }
-
-  .status-badge {
-    padding: var(--space-1) var(--space-2);
-    border-radius: var(--radius-sm);
-    font-size: 0.75rem;
-    font-weight: 500;
-    background-color: var(--color-text-muted);
-    color: white;
-  }
-
-  .status-badge.running {
-    background-color: var(--color-success);
-  }
-
-  .current-work-banner {
-    display: flex;
-    align-items: center;
-    gap: var(--space-3);
-    padding: var(--space-3);
-    background-color: var(--color-surface-raised);
-    border-radius: var(--radius-md);
-    border-left: 3px solid var(--color-primary);
-  }
-
-  .work-label {
-    font-size: 0.75rem;
-    color: var(--color-text-muted);
-    text-transform: uppercase;
-  }
-
-  .work-id {
-    font-family: var(--font-mono);
-    font-size: 0.875rem;
-    color: var(--color-primary);
-  }
-
-  .work-title-text {
-    font-size: 0.875rem;
-    color: var(--color-text);
-  }
-
-  .agent-content {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-4);
-  }
-
-  .placeholder-text {
-    color: var(--color-text-muted);
-    font-style: italic;
-  }
-
-  .agent-stats {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: var(--space-3);
-  }
-
-  .stat {
-    padding: var(--space-3);
-    background-color: var(--color-surface);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-  }
-
-  .stat-label {
-    display: block;
-    font-size: 0.75rem;
-    color: var(--color-text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    margin-bottom: var(--space-1);
-  }
-
-  .stat-value {
-    font-size: 0.875rem;
-    font-weight: 500;
   }
 
   .header {
     display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: var(--space-3) var(--space-4);
-    background-color: var(--color-surface);
-    border-bottom: 1px solid var(--color-border);
-    flex-wrap: wrap;
-    gap: var(--space-3);
-  }
-
-  .header-left {
-    display: flex;
     align-items: center;
     gap: var(--space-4);
-    flex-wrap: wrap;
+    padding: var(--space-3) var(--space-6);
+    background-color: var(--color-surface);
+    border-bottom: 2px solid var(--color-accent-amber);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
   }
 
-  .header-right {
-    display: flex;
-    align-items: center;
-    gap: var(--space-3);
+  .sidebar-toggle {
+    display: none;
+    background: none;
+    border: none;
+    font-size: 1.5rem;
+    cursor: pointer;
+    padding: 0;
+    color: var(--color-accent-amber);
+
+    @media (max-width: 768px) {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+  }
+
+  .toggle-icon {
+    line-height: 1;
   }
 
   .logo {
     display: flex;
     align-items: center;
     gap: var(--space-2);
+    flex: 0 0 auto;
   }
 
   .logo-icon {
-    font-size: 1.25rem;
+    font-size: 1.75rem;
+    line-height: 1;
   }
 
   .logo h1 {
-    font-size: 1.125rem;
-    font-weight: 600;
+    font-size: 1.25rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    color: var(--color-accent-amber);
+    margin: 0;
   }
 
-  .nav-tabs {
-    display: flex;
-    gap: var(--space-1);
-  }
-
-  .nav-tab {
+  .header-info {
     display: flex;
     align-items: center;
-    gap: var(--space-2);
-    padding: var(--space-2) var(--space-3);
-    background: none;
-    border: none;
-    border-radius: var(--radius-md);
-    color: var(--color-text-muted);
-    font-size: 0.875rem;
-    cursor: pointer;
-    transition: all var(--transition-fast);
-  }
-
-  .nav-tab:hover {
-    background-color: var(--color-surface-raised);
-    color: var(--color-text);
-  }
-
-  .nav-tab.active {
-    background-color: var(--color-primary);
-    color: white;
+    gap: var(--space-4);
+    margin-left: auto;
   }
 
   .town-name {
-    font-weight: 500;
-    color: var(--color-primary);
-    display: none;
+    font-weight: 600;
+    color: var(--color-text);
   }
 
-  @media (min-width: 640px) {
-    .town-name {
-      display: block;
-    }
-  }
-
-  .theme-toggle {
+  .overseer {
     display: flex;
     align-items: center;
-    justify-content: center;
-    width: 2rem;
-    height: 2rem;
-    background: none;
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    cursor: pointer;
-    transition: all var(--transition-fast);
+    gap: var(--space-2);
+    color: var(--color-text-muted);
+    font-size: 0.875rem;
   }
 
-  .theme-toggle:hover {
-    background-color: var(--color-surface-raised);
-  }
-
-  .theme-icon {
-    font-size: 1rem;
+  .overseer-label {
+    font-weight: 500;
   }
 
   .mail-badge {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-width: 1.25rem;
-    height: 1.25rem;
+    min-width: 1.5rem;
+    height: 1.5rem;
     padding: 0 var(--space-1);
     font-size: 0.75rem;
-    font-weight: 600;
-    background-color: var(--color-error);
-    color: white;
-    border-radius: 9999px;
+    font-weight: 700;
+    background-color: var(--color-accent-amber);
+    color: var(--color-background);
+    border-radius: 50%;
   }
 
-  .mail-badge.small {
-    min-width: 1rem;
-    height: 1rem;
-    font-size: 0.625rem;
-  }
-
-  .main {
+  .container {
+    display: flex;
     flex: 1;
-    padding: var(--space-4);
-    max-width: 1400px;
-    margin: 0 auto;
-    width: 100%;
+    overflow: hidden;
   }
 
-  @media (min-width: 768px) {
-    .main {
-      padding: var(--space-6);
+  /* Sidebar */
+  .sidebar {
+    width: 280px;
+    background-color: var(--color-surface);
+    border-right: 2px solid var(--color-border);
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    transition: transform 0.2s ease;
+
+    @media (max-width: 768px) {
+      position: absolute;
+      left: 0;
+      top: 0;
+      height: 100%;
+      transform: translateX(-100%);
+      z-index: 100;
+      box-shadow: 2px 0 12px rgba(0, 0, 0, 0.2);
+
+      &.open {
+        transform: translateX(0);
+      }
     }
   }
 
-  .loading, .error-container {
+  .sidebar-loading,
+  .sidebar-error {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--space-6);
+    text-align: center;
+  }
+
+  .sidebar-section {
+    padding: var(--space-3);
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .sidebar-section:last-child {
+    border-bottom: none;
+  }
+
+  .mayor-section {
+    background: linear-gradient(135deg, rgba(217, 119, 6, 0.05) 0%, rgba(217, 119, 6, 0) 100%);
+    border-bottom: 2px solid var(--color-accent-amber);
+  }
+
+  .section-title {
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--color-text-muted);
+    margin: 0 0 var(--space-2) 0;
+    padding: 0 var(--space-2);
+  }
+
+  .rig-group {
+    margin-bottom: var(--space-2);
+  }
+
+  .rig-header-button {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2);
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--color-text-muted);
+    font-size: 0.875rem;
+    font-weight: 600;
+    text-align: left;
+    transition: background-color 0.15s ease;
+    border-radius: var(--radius-sm);
+
+    &:hover {
+      background-color: rgba(217, 119, 6, 0.1);
+      color: var(--color-accent-amber);
+    }
+  }
+
+  .rig-toggle {
+    font-size: 0.625rem;
+    width: 1rem;
+    text-align: center;
+  }
+
+  .rig-name {
+    flex: 1;
+  }
+
+  .rig-badge {
+    font-size: 0.75rem;
+    color: var(--color-text-muted);
+    font-weight: normal;
+  }
+
+  .agents-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding-left: var(--space-3);
+  }
+
+  .agent-button {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    background: none;
+    border: 2px solid transparent;
+    cursor: pointer;
+    text-align: left;
+    border-radius: var(--radius-md);
+    transition: all 0.15s ease;
+    color: var(--color-text);
+
+    &:hover {
+      background-color: var(--color-surface-raised);
+      border-color: var(--color-accent-amber);
+    }
+
+    &.selected {
+      background-color: rgba(217, 119, 6, 0.15);
+      border-color: var(--color-accent-amber);
+      font-weight: 600;
+    }
+  }
+
+  .agent-button-content {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex: 1;
+    min-width: 0;
+  }
+
+  .agent-icon {
+    font-size: 1.25rem;
+    flex: 0 0 auto;
+  }
+
+  .agent-info {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-width: 0;
+  }
+
+  .agent-name {
+    font-weight: 600;
+    font-size: 0.875rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .agent-status-line {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    font-size: 0.75rem;
+    color: var(--color-text-muted);
+  }
+
+  .status-dot {
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 50%;
+    background-color: var(--color-text-muted);
+    flex: 0 0 auto;
+
+    &.running {
+      background-color: #10b981;
+      box-shadow: 0 0 4px rgba(16, 185, 129, 0.5);
+    }
+
+    &.working {
+      background-color: var(--color-accent-amber);
+      box-shadow: 0 0 4px rgba(217, 119, 6, 0.5);
+      animation: pulse 2s infinite;
+    }
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+  }
+
+  .status-text {
+    flex: 1;
+  }
+
+  .mayor-button {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-3);
+    padding: var(--space-4);
+    border: 2px solid var(--color-accent-amber);
+
+    &:hover,
+    &.selected {
+      background-color: rgba(217, 119, 6, 0.15);
+    }
+  }
+
+  .mayor-icon {
+    font-size: 2rem;
+  }
+
+  /* Main Content */
+  .main-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background-color: var(--color-background);
+  }
+
+  .view-selector {
+    display: flex;
+    gap: var(--space-2);
+    padding: var(--space-4) var(--space-6);
+    background-color: var(--color-surface);
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .view-button {
+    padding: var(--space-2) var(--space-4);
+    background: none;
+    border: 2px solid var(--color-border);
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 0.875rem;
+    color: var(--color-text-muted);
+    transition: all 0.15s ease;
+
+    &:hover {
+      border-color: var(--color-accent-amber);
+      color: var(--color-accent-amber);
+    }
+
+    &.active {
+      background-color: var(--color-accent-amber);
+      border-color: var(--color-accent-amber);
+      color: var(--color-background);
+    }
+  }
+
+  .loading,
+  .error-container {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
     gap: var(--space-4);
     padding: var(--space-8);
-    text-align: center;
+    flex: 1;
   }
 
-  .error-icon {
-    font-size: 2.5rem;
-  }
-
-  .error-text {
-    color: var(--color-error);
-  }
-
-  .btn {
-    padding: var(--space-2) var(--space-4);
+  .error-container button {
+    padding: var(--space-2) var(--space-6);
+    background-color: var(--color-accent-amber);
+    color: var(--color-background);
     border: none;
     border-radius: var(--radius-md);
-    font-size: 0.875rem;
     cursor: pointer;
-    transition: all var(--transition-fast);
+    font-weight: 600;
   }
 
-  .btn-primary {
-    background-color: var(--color-primary);
-    color: white;
+  /* Chat View */
+  .chat-container {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    overflow: hidden;
   }
 
-  .btn-primary:hover {
-    opacity: 0.9;
+  .chat-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--space-4) var(--space-6);
+    background-color: var(--color-surface);
+    border-bottom: 1px solid var(--color-border);
   }
 
-  .btn-icon {
+  .chat-header-content {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+  }
+
+  .chat-icon {
+    font-size: 2rem;
+  }
+
+  .chat-header-info {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .chat-title {
+    font-size: 1.125rem;
+    font-weight: 700;
+    margin: 0;
+  }
+
+  .chat-subtitle {
+    font-size: 0.875rem;
+    color: var(--color-text-muted);
+    margin: 0;
+  }
+
+  .mail-indicator {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  .mail-count {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--color-accent-amber);
+  }
+
+  .mail-label {
+    font-size: 0.75rem;
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .chat-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: var(--space-6);
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 2rem;
-    height: 2rem;
-    padding: 0;
-    background: none;
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    cursor: pointer;
   }
 
-  .btn-sm {
-    padding: var(--space-1) var(--space-2);
-    font-size: 0.75rem;
+  .message-placeholder {
+    text-align: center;
+    color: var(--color-text-muted);
+  }
+
+  .message-placeholder p {
+    margin: var(--space-2) 0;
+  }
+
+  .text-muted {
+    color: var(--color-text-muted);
+    font-size: 0.875rem;
+  }
+
+  .chat-input-area {
+    display: flex;
+    gap: var(--space-2);
+    padding: var(--space-4) var(--space-6);
+    background-color: var(--color-surface);
+    border-top: 1px solid var(--color-border);
+  }
+
+  .chat-input {
+    flex: 1;
+    padding: var(--space-2) var(--space-3);
+    background-color: var(--color-surface-raised);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    color: var(--color-text);
+    font-family: inherit;
+
+    &::placeholder {
+      color: var(--color-text-muted);
+    }
+
+    &:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+  }
+
+  .send-button {
+    padding: var(--space-2) var(--space-4);
+    background-color: var(--color-accent-amber);
+    color: var(--color-background);
+    border: none;
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    font-weight: 600;
+
+    &:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+  }
+
+  /* Dashboard View */
+  .dashboard-container {
+    flex: 1;
+    overflow-y: auto;
+    padding: var(--space-6);
   }
 
   .summary-grid {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: var(--space-3);
-    margin-bottom: var(--space-4);
-  }
-
-  @media (min-width: 640px) {
-    .summary-grid {
-      grid-template-columns: repeat(4, 1fr);
-      gap: var(--space-4);
-      margin-bottom: var(--space-6);
-    }
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: var(--space-4);
+    margin-bottom: var(--space-8);
   }
 
   .summary-card {
+    padding: var(--space-6);
+    background-color: var(--color-surface);
+    border: 2px solid var(--color-border);
+    border-radius: var(--radius-lg);
     text-align: center;
-    padding: var(--space-4);
-  }
+    transition: all 0.15s ease;
 
-  @media (min-width: 640px) {
-    .summary-card {
-      padding: var(--space-6);
+    &:hover {
+      border-color: var(--color-accent-amber);
+      background-color: rgba(217, 119, 6, 0.05);
     }
   }
 
   .summary-value {
-    font-size: 1.5rem;
+    font-size: 2.5rem;
     font-weight: 700;
-    color: var(--color-primary);
-  }
-
-  @media (min-width: 640px) {
-    .summary-value {
-      font-size: 2rem;
-    }
+    color: var(--color-accent-amber);
   }
 
   .summary-label {
     font-size: 0.75rem;
-    color: var(--color-text-muted);
+    font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
-  }
-
-  @media (min-width: 640px) {
-    .summary-label {
-      font-size: 0.875rem;
-    }
-  }
-
-  .agent-list {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-3);
-  }
-
-  .agent-item {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    padding: var(--space-2) var(--space-3);
-    background-color: var(--color-surface-raised);
-    border-radius: var(--radius-md);
-    flex: 1 1 auto;
-    min-width: 150px;
-  }
-
-  .agent-icon {
-    font-size: 1.25rem;
-  }
-
-  .agent-icon.small {
-    font-size: 1rem;
-  }
-
-  .agent-name {
-    font-weight: 500;
-    font-size: 0.875rem;
+    letter-spacing: 0.1em;
+    color: var(--color-text-muted);
+    margin-top: var(--space-2);
   }
 
   .section-header {
     font-size: 0.875rem;
-    font-weight: 500;
-    color: var(--color-text-muted);
+    font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
-    margin: var(--space-4) 0;
-  }
-
-  @media (min-width: 640px) {
-    .section-header {
-      font-size: 1rem;
-      margin: var(--space-6) 0 var(--space-4);
-    }
+    letter-spacing: 0.1em;
+    color: var(--color-text-muted);
+    margin-bottom: var(--space-4);
   }
 
   .rigs-grid {
     display: grid;
-    grid-template-columns: 1fr;
-    gap: var(--space-3);
-  }
-
-  @media (min-width: 640px) {
-    .rigs-grid {
-      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-      gap: var(--space-4);
-    }
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: var(--space-4);
   }
 
   .rig-card {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
+    padding: var(--space-4);
+    background-color: var(--color-surface);
+    border: 2px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    transition: all 0.15s ease;
+
+    &:hover {
+      border-color: var(--color-accent-amber);
+      box-shadow: 0 4px 12px rgba(217, 119, 6, 0.1);
+    }
   }
 
-  .rig-header {
+  .rig-header-detail {
     display: flex;
     justify-content: space-between;
-    align-items: center;
+    align-items: flex-start;
+    margin-bottom: var(--space-3);
   }
 
   .rig-name {
     font-size: 1rem;
-    font-weight: 600;
+    font-weight: 700;
+    margin: 0;
+    color: var(--color-text);
   }
 
   .rig-services {
@@ -1169,434 +989,56 @@
   }
 
   .service-badge {
-    font-size: 1rem;
+    font-size: 1.25rem;
   }
 
   .rig-path {
-    font-size: 0.7rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    font-size: 0.75rem;
+    color: var(--color-text-muted);
+    margin: 0 0 var(--space-3) 0;
+    word-break: break-all;
+    font-family: 'Courier New', monospace;
   }
 
   .rig-stats {
     display: flex;
-    gap: var(--space-3);
-    font-size: 0.8rem;
-    color: var(--color-text-muted);
-  }
-
-  .rig-agents {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
-    margin-top: var(--space-2);
-    padding-top: var(--space-2);
-    border-top: 1px solid var(--color-border);
-  }
-
-  .agent-row {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    font-size: 0.8rem;
-    flex-wrap: wrap;
-  }
-
-  .work-title {
-    margin-left: auto;
-    font-size: 0.7rem;
-    color: var(--color-text-muted);
-    max-width: 150px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  /* Mail styles */
-  .mail-container {
-    display: flex;
     gap: var(--space-4);
-    height: calc(100vh - 180px);
-    min-height: 400px;
+    font-size: 0.875rem;
+    color: var(--color-text-muted);
   }
 
-  .mail-list {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    background-color: var(--color-surface);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    overflow: hidden;
-    max-width: 100%;
+  .spinner {
+    width: 40px;
+    height: 40px;
+    border: 3px solid var(--color-border);
+    border-top-color: var(--color-accent-amber);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
   }
 
-  @media (min-width: 768px) {
-    .mail-list {
-      max-width: 400px;
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+
+  @media (max-width: 768px) {
+    .header {
+      gap: var(--space-2);
     }
 
-    .mail-list.has-selected {
-      display: flex;
-    }
-  }
-
-  @media (max-width: 767px) {
-    .mail-list.has-selected {
+    .logo h1 {
       display: none;
     }
-  }
 
-  .mail-list-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: var(--space-3);
-    border-bottom: 1px solid var(--color-border);
-  }
-
-  .mail-list-header h2 {
-    font-size: 1rem;
-    font-weight: 600;
-  }
-
-  .mail-list-actions {
-    display: flex;
-    gap: var(--space-2);
-    align-items: center;
-  }
-
-  .mail-items {
-    flex: 1;
-    overflow-y: auto;
-  }
-
-  .mail-item {
-    display: block;
-    width: 100%;
-    padding: var(--space-3);
-    background: none;
-    border: none;
-    border-bottom: 1px solid var(--color-border);
-    text-align: left;
-    cursor: pointer;
-    transition: background-color var(--transition-fast);
-  }
-
-  .mail-item:hover {
-    background-color: var(--color-surface-raised);
-  }
-
-  .mail-item.selected {
-    background-color: var(--color-surface-raised);
-    border-left: 3px solid var(--color-primary);
-  }
-
-  .mail-item.unread {
-    background-color: rgba(59, 130, 246, 0.05);
-  }
-
-  .mail-item.unread .mail-subject {
-    font-weight: 600;
-  }
-
-  .mail-item-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: var(--space-1);
-  }
-
-  .mail-from {
-    font-size: 0.8rem;
-    font-weight: 500;
-    color: var(--color-text);
-  }
-
-  .mail-time {
-    font-size: 0.7rem;
-    color: var(--color-text-muted);
-  }
-
-  .mail-subject {
-    display: flex;
-    align-items: center;
-    gap: var(--space-1);
-    font-size: 0.875rem;
-    color: var(--color-text);
-    margin-bottom: var(--space-1);
-  }
-
-  .pin-icon {
-    font-size: 0.75rem;
-  }
-
-  .mail-preview {
-    font-size: 0.75rem;
-    color: var(--color-text-muted);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .mail-detail {
-    display: none;
-    flex: 2;
-    background-color: var(--color-surface);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    overflow: hidden;
-  }
-
-  @media (min-width: 768px) {
-    .mail-detail {
-      display: flex;
-      flex-direction: column;
+    .header-info {
+      display: none;
     }
-  }
 
-  @media (max-width: 767px) {
-    .mail-detail.visible {
-      display: flex;
-      flex-direction: column;
-      position: fixed;
-      top: 0;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      z-index: 100;
-      border-radius: 0;
+    .container {
+      position: relative;
     }
-  }
 
-  .mail-detail-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: var(--space-3);
-    border-bottom: 1px solid var(--color-border);
-  }
-
-  .btn-back {
-    display: none;
-    padding: var(--space-2);
-    background: none;
-    border: none;
-    color: var(--color-primary);
-    cursor: pointer;
-  }
-
-  @media (max-width: 767px) {
-    .btn-back {
-      display: block;
+    .sidebar {
+      width: 100%;
     }
-  }
-
-  .mail-detail-meta {
-    display: flex;
-    gap: var(--space-2);
-  }
-
-  .mail-detail-content {
-    flex: 1;
-    overflow-y: auto;
-    padding: var(--space-4);
-  }
-
-  .mail-detail-subject {
-    font-size: 1.25rem;
-    font-weight: 600;
-    margin-bottom: var(--space-4);
-  }
-
-  .mail-detail-info {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
-    padding-bottom: var(--space-4);
-    margin-bottom: var(--space-4);
-    border-bottom: 1px solid var(--color-border);
-    font-size: 0.875rem;
-  }
-
-  .mail-detail-body {
-    font-size: 0.9rem;
-    line-height: 1.6;
-  }
-
-  .mail-detail-body pre {
-    white-space: pre-wrap;
-    word-wrap: break-word;
-    font-family: inherit;
-    margin: 0;
-  }
-
-  /* Priority colors */
-  .priority-urgent {
-    color: var(--color-error);
-  }
-
-  .priority-high {
-    color: var(--color-warning);
-  }
-
-  .priority-normal {
-    color: var(--color-text);
-  }
-
-  .priority-low {
-    color: var(--color-text-muted);
-  }
-
-  /* Empty and loading states */
-  .empty-state {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    padding: var(--space-8);
-    color: var(--color-text-muted);
-    height: 100%;
-  }
-
-  .empty-icon {
-    font-size: 3rem;
-    margin-bottom: var(--space-3);
-  }
-
-  .loading-inline, .error-inline {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: var(--space-3);
-    padding: var(--space-4);
-    color: var(--color-text-muted);
-  }
-
-  .error-inline {
-    color: var(--color-error);
-  }
-
-  .spinner.small {
-    width: 1rem;
-    height: 1rem;
-  }
-
-  .footer {
-    padding: var(--space-3) var(--space-4);
-    text-align: center;
-    border-top: 1px solid var(--color-border);
-  }
-
-  /* Create dropdown */
-  .create-dropdown {
-    position: relative;
-  }
-
-  .create-btn {
-    display: flex;
-    align-items: center;
-    gap: var(--space-1);
-    padding: var(--space-2) var(--space-3);
-    font-size: 0.875rem;
-  }
-
-  .create-menu {
-    position: absolute;
-    top: 100%;
-    right: 0;
-    margin-top: var(--space-2);
-    background: var(--color-surface);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-    min-width: 180px;
-    z-index: 100;
-    overflow: hidden;
-  }
-
-  .create-menu button {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    width: 100%;
-    padding: var(--space-3) var(--space-4);
-    text-align: left;
-    background: none;
-    border: none;
-    cursor: pointer;
-    font-size: 0.875rem;
-    color: var(--color-text);
-    transition: background-color var(--transition-fast);
-  }
-
-  .create-menu button:hover {
-    background: var(--color-surface-raised);
-  }
-
-  /* Modal overlay */
-  .modal-overlay {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: rgba(0, 0, 0, 0.5);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
-    padding: var(--space-4);
-  }
-
-  .modal-content {
-    background: var(--color-surface);
-    border-radius: var(--radius-lg);
-    max-width: 500px;
-    width: 100%;
-    max-height: 90vh;
-    overflow: auto;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-  }
-
-  /* Issues view */
-  .issues-view {
-    max-width: 900px;
-  }
-
-  /* Mail composer modal header */
-  .composer-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: var(--space-4);
-    border-bottom: 1px solid var(--color-border);
-  }
-
-  .composer-header h3 {
-    margin: 0;
-    font-size: 1.125rem;
-    font-weight: 600;
-  }
-
-  .close-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 2rem;
-    height: 2rem;
-    background: none;
-    border: none;
-    color: var(--color-text-muted);
-    font-size: 1.25rem;
-    cursor: pointer;
-    border-radius: var(--radius-sm);
-    transition: background-color var(--transition-fast), color var(--transition-fast);
-  }
-
-  .close-btn:hover {
-    background-color: var(--color-surface-raised);
-    color: var(--color-text);
   }
 </style>

@@ -95,10 +95,8 @@ type StatusSummary struct {
 }
 
 // GetStatus returns full town status.
-// Uses fastMode=true to skip mail counting which can cause timeouts with many agents.
-// Mail counts are fetched separately by the frontend when needed.
 func (h *StatusHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
-	status, err := h.buildStatus(true)
+	status, err := h.buildStatus(false)
 	if err != nil {
 		api.InternalError(w, err.Error())
 		return

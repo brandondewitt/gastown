@@ -2,22 +2,18 @@
 package web
 
 import (
-	"bufio"
 	"context"
 	"embed"
-	"encoding/json"
 	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/gorilla/mux"
-	"github.com/steveyegge/gastown/internal/web/api"
 	"github.com/steveyegge/gastown/internal/web/handlers"
 	"github.com/steveyegge/gastown/internal/web/ws"
 )
@@ -67,64 +63,20 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/rigs", rigsHandler.List).Methods("GET")
 	api.HandleFunc("/rigs/{name}", rigsHandler.Get).Methods("GET")
 	api.HandleFunc("/rigs/{name}/agents", rigsHandler.GetAgents).Methods("GET")
-	api.HandleFunc("/rigs/{rig}/refinery/{action}", rigsHandler.RefinaryAction).Methods("POST")
-
-	// Polecats handlers
-	polecatsHandler := handlers.NewPolecatsHandler(s.config.TownRoot)
-	api.HandleFunc("/rigs/{rig}/polecats", polecatsHandler.ListPolecats).Methods("GET")
-	api.HandleFunc("/rigs/{rig}/polecats", polecatsHandler.HandlePolecats).Methods("POST")
-	api.HandleFunc("/rigs/{rig}/polecats/{name}", polecatsHandler.RemovePolecat).Methods("DELETE")
 
 	// Agents handlers
 	agentsHandler := handlers.NewAgentsHandler(s.config.TownRoot)
 	api.HandleFunc("/agents", agentsHandler.List).Methods("GET")
-	// Note: specific routes must come before the catch-all {address:.*} route
-	api.HandleFunc("/agents/{address:.*}/output", agentsHandler.GetOutput).Methods("GET")
-	api.HandleFunc("/agents/{address:.*}/message", agentsHandler.SendMessage).Methods("POST")
 	api.HandleFunc("/agents/{address:.*}", agentsHandler.Get).Methods("GET")
 
 	// Convoys handlers
 	convoysHandler := handlers.NewConvoysHandler(s.config.TownRoot)
 	api.HandleFunc("/convoys", convoysHandler.List).Methods("GET")
-	api.HandleFunc("/convoys", convoysHandler.Create).Methods("POST")
 	api.HandleFunc("/convoys/{id}", convoysHandler.Get).Methods("GET")
 
 	// Events handlers
 	eventsHandler := handlers.NewEventsHandler(s.config.TownRoot)
 	api.HandleFunc("/events", eventsHandler.List).Methods("GET")
-
-	// Mail handlers
-	mailHandler := handlers.NewMailHandler(s.config.TownRoot)
-	api.HandleFunc("/mail", mailHandler.ListInbox).Methods("GET")
-	api.HandleFunc("/mail", mailHandler.HandleSendMail).Methods("POST")
-	api.HandleFunc("/mail/count", mailHandler.GetCount).Methods("GET")
-	api.HandleFunc("/mail/search", mailHandler.Search).Methods("POST")
-	api.HandleFunc("/mail/{id}", mailHandler.GetMessage).Methods("GET")
-	api.HandleFunc("/mail/{id}", mailHandler.DeleteMessage).Methods("DELETE")
-	api.HandleFunc("/mail/{id}/read", mailHandler.MarkRead).Methods("POST")
-	api.HandleFunc("/mail/{id}/reply", mailHandler.Reply).Methods("POST")
-	api.HandleFunc("/mail/agent/{address:.*}", mailHandler.ListAgentInbox).Methods("GET")
-
-	// Sling handlers (work dispatch)
-	slingHandler := handlers.NewSlingHandler(s.config.TownRoot)
-	api.HandleFunc("/sling", slingHandler.Dispatch).Methods("POST")
-
-	// Beads handlers (issue creation and listing)
-	beadsHandler := handlers.NewBeadsHandler(s.config.TownRoot)
-	api.HandleFunc("/beads", beadsHandler.List).Methods("GET")
-	api.HandleFunc("/beads", beadsHandler.Create).Methods("POST")
-
-	// MQ handlers (merge queue)
-	mqHandler := handlers.NewMQHandler(s.config.TownRoot)
-	api.HandleFunc("/mq", mqHandler.List).Methods("GET")
-
-	// Services handlers
-	servicesHandler := handlers.NewServicesHandler(s.config.TownRoot)
-	api.HandleFunc("/rigs/{rig}/services/witness/{action}", servicesHandler.HandleWitness).Methods("POST")
-	api.HandleFunc("/rigs/{rig}/services/refinery/{action}", servicesHandler.HandleRefinery).Methods("POST")
-
-	// Merge queue retry handler
-	api.HandleFunc("/mq/{id}/retry", mqHandler.Retry).Methods("POST")
 
 	// WebSocket handler
 	api.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
@@ -177,7 +129,7 @@ func (s *Server) staticHandler() http.Handler {
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 
 		if r.Method == "OPTIONS" {
@@ -252,106 +204,8 @@ func (s *Server) StartWithGracefulShutdown() error {
 
 // startEventBroadcaster watches for events and broadcasts them to WebSocket clients.
 func (s *Server) startEventBroadcaster() {
-	eventsFile := filepath.Join(s.config.TownRoot, ".beads", "events.jsonl")
-
-	// Track the current file size and position for tailing
-	var lastSize int64
-	var file *os.File
-	var scanner *bufio.Scanner
-
-	// Polling interval for checking file changes
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		// Try to open/reopen the file
-		currentFile, err := os.Open(eventsFile)
-		if err != nil {
-			// File doesn't exist yet or can't be opened
-			if file != nil {
-				file.Close()
-				file = nil
-				scanner = nil
-			}
-			continue
-		}
-
-		// Get current file info
-		fileInfo, err := currentFile.Stat()
-		if err != nil {
-			currentFile.Close()
-			continue
-		}
-
-		currentSize := fileInfo.Size()
-
-		// If this is a new file or file was truncated, reset position
-		if file == nil || currentSize < lastSize {
-			if file != nil {
-				file.Close()
-			}
-			file = currentFile
-			lastSize = 0
-			scanner = bufio.NewScanner(file)
-		} else if currentSize > lastSize {
-			// File has new content, seek to last known position
-			if file != nil {
-				file.Close()
-			}
-			file = currentFile
-
-			// Seek to last known position
-			if _, err := file.Seek(lastSize, 0); err != nil {
-				file.Close()
-				file = nil
-				continue
-			}
-			scanner = bufio.NewScanner(file)
-		} else {
-			// No new content
-			currentFile.Close()
-			continue
-		}
-
-		// Read new lines from the file
-		if scanner != nil {
-			for scanner.Scan() {
-				line := scanner.Text()
-				if line == "" {
-					continue
-				}
-
-				// Parse the JSON event
-				var eventData map[string]interface{}
-				if err := json.Unmarshal([]byte(line), &eventData); err != nil {
-					log.Printf("Failed to parse event: %v", err)
-					continue
-				}
-
-				// Create WSMessage to broadcast
-				msg := &api.WSMessage{
-					Type:      api.WSTypeEvent,
-					Timestamp: time.Now(),
-					Payload:   eventData,
-				}
-
-				// Broadcast to WebSocket clients
-				s.hub.Broadcast(msg)
-
-				// Update position
-				lastSize, _ = file.Seek(0, 1) // Get current position
-			}
-		}
-
-		if file != nil {
-			lastSize, _ = file.Seek(0, 1) // Get final position
-		}
-	}
-
-	// Cleanup
-	if file != nil {
-		file.Close()
-	}
+	// TODO: Implement event file tailing and broadcasting
+	// This will be implemented in Phase 2: Real-time Events
 }
 
 // Addr returns the server address.
