@@ -419,6 +419,179 @@
             padding: 16px 8px;
             font-style: italic;
         }
+
+        /* Task detail drawer */
+        .drawer-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 0.2s, visibility 0.2s;
+            z-index: 100;
+        }
+
+        .drawer-overlay.open {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        .task-drawer {
+            position: fixed;
+            top: 0;
+            right: 0;
+            width: 400px;
+            max-width: 90vw;
+            height: 100vh;
+            background: var(--bg-card);
+            border-left: 1px solid var(--border);
+            transform: translateX(100%);
+            transition: transform 0.2s ease-out;
+            z-index: 101;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .drawer-overlay.open .task-drawer {
+            transform: translateX(0);
+        }
+
+        .drawer-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border);
+            background: var(--bg-dark);
+        }
+
+        .drawer-title {
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .drawer-close {
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            font-size: 1.25rem;
+            cursor: pointer;
+            padding: 4px 8px;
+            border-radius: 4px;
+            transition: background 0.2s, color 0.2s;
+        }
+
+        .drawer-close:hover {
+            background: var(--border);
+            color: var(--text-primary);
+        }
+
+        .drawer-content {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+        }
+
+        .drawer-field {
+            margin-bottom: 20px;
+        }
+
+        .drawer-label {
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-secondary);
+            margin-bottom: 6px;
+        }
+
+        .drawer-value {
+            font-size: 0.875rem;
+            color: var(--text-primary);
+            line-height: 1.5;
+        }
+
+        .drawer-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 500;
+            text-transform: capitalize;
+        }
+
+        .drawer-status.status-open {
+            background: rgba(250, 204, 21, 0.15);
+            color: var(--yellow);
+        }
+
+        .drawer-status.status-in_progress {
+            background: rgba(74, 222, 128, 0.15);
+            color: var(--green);
+        }
+
+        .drawer-status.status-closed {
+            background: rgba(170, 170, 170, 0.15);
+            color: var(--text-secondary);
+        }
+
+        .drawer-status-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: currentColor;
+        }
+
+        .drawer-id {
+            font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+            background: var(--bg-dark);
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+        }
+
+        .drawer-assignee {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            background: var(--bg-dark);
+            border-radius: 4px;
+            font-size: 0.8rem;
+        }
+
+        .drawer-assignee-icon {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.7rem;
+            color: var(--text-secondary);
+        }
+
+        .drawer-empty {
+            color: var(--text-secondary);
+            font-style: italic;
+        }
+
+        .kanban-card.clickable {
+            cursor: pointer;
+        }
+
+        @media (max-width: 768px) {
+            .task-drawer {
+                width: 100%;
+            }
+        }
     </style>
 </head>
 <body>
@@ -476,7 +649,7 @@
                                 </div>
                                 <div class="kanban-cards">
                                     {{range issuesByStatus .TrackedIssues "open"}}
-                                    <div class="kanban-card">
+                                    <div class="kanban-card clickable" onclick="openTaskDrawer(this)" data-task-id="{{.ID}}" data-task-title="{{.Title}}" data-task-status="open" data-task-assignee="{{.Assignee}}">
                                         <div class="card-id">{{.ID}}</div>
                                         <div class="card-title">{{.Title}}</div>
                                         {{if .Assignee}}<div class="card-assignee">{{.Assignee}}</div>{{end}}
@@ -494,7 +667,7 @@
                                 </div>
                                 <div class="kanban-cards">
                                     {{range issuesByStatus .TrackedIssues "in_progress"}}
-                                    <div class="kanban-card">
+                                    <div class="kanban-card clickable" onclick="openTaskDrawer(this)" data-task-id="{{.ID}}" data-task-title="{{.Title}}" data-task-status="in_progress" data-task-assignee="{{.Assignee}}">
                                         <div class="card-id">{{.ID}}</div>
                                         <div class="card-title">{{.Title}}</div>
                                         {{if .Assignee}}<div class="card-assignee">{{.Assignee}}</div>{{end}}
@@ -512,7 +685,7 @@
                                 </div>
                                 <div class="kanban-cards">
                                     {{range issuesByStatus .TrackedIssues "closed"}}
-                                    <div class="kanban-card card-closed">
+                                    <div class="kanban-card card-closed clickable" onclick="openTaskDrawer(this)" data-task-id="{{.ID}}" data-task-title="{{.Title}}" data-task-status="closed" data-task-assignee="{{.Assignee}}">
                                         <div class="card-id">{{.ID}}</div>
                                         <div class="card-title">{{.Title}}</div>
                                     </div>
@@ -614,6 +787,41 @@
         {{end}}
     </div>
 
+    <!-- Task Detail Drawer -->
+    <div class="drawer-overlay" id="drawer-overlay" onclick="closeTaskDrawer()">
+        <div class="task-drawer" onclick="event.stopPropagation()">
+            <div class="drawer-header">
+                <span class="drawer-title">Task Details</span>
+                <button class="drawer-close" onclick="closeTaskDrawer()">&times;</button>
+            </div>
+            <div class="drawer-content">
+                <div class="drawer-field">
+                    <div class="drawer-label">ID</div>
+                    <div class="drawer-value">
+                        <span class="drawer-id" id="drawer-task-id"></span>
+                    </div>
+                </div>
+                <div class="drawer-field">
+                    <div class="drawer-label">Title</div>
+                    <div class="drawer-value" id="drawer-task-title"></div>
+                </div>
+                <div class="drawer-field">
+                    <div class="drawer-label">Status</div>
+                    <div class="drawer-value">
+                        <span class="drawer-status" id="drawer-task-status">
+                            <span class="drawer-status-dot"></span>
+                            <span id="drawer-status-text"></span>
+                        </span>
+                    </div>
+                </div>
+                <div class="drawer-field">
+                    <div class="drawer-label">Assignee</div>
+                    <div class="drawer-value" id="drawer-task-assignee"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script>
         const STORAGE_KEY = 'expandedConvoys';
 
@@ -675,6 +883,51 @@
         }
 
         document.addEventListener('DOMContentLoaded', restoreExpandedState);
+
+        // Task drawer functions
+        function openTaskDrawer(cardElement) {
+            event.stopPropagation(); // Prevent convoy row toggle
+
+            const taskId = cardElement.dataset.taskId;
+            const taskTitle = cardElement.dataset.taskTitle;
+            const taskStatus = cardElement.dataset.taskStatus;
+            const taskAssignee = cardElement.dataset.taskAssignee;
+
+            // Populate drawer fields
+            document.getElementById('drawer-task-id').textContent = taskId;
+            document.getElementById('drawer-task-title').textContent = taskTitle;
+
+            // Set status with proper class
+            const statusEl = document.getElementById('drawer-task-status');
+            statusEl.className = 'drawer-status status-' + taskStatus;
+            document.getElementById('drawer-status-text').textContent = taskStatus.replace('_', ' ');
+
+            // Set assignee
+            const assigneeEl = document.getElementById('drawer-task-assignee');
+            if (taskAssignee) {
+                // Extract polecat name from path like "roxas/polecats/dag"
+                const parts = taskAssignee.split('/');
+                const name = parts[parts.length - 1];
+                const initial = name.charAt(0).toUpperCase();
+                assigneeEl.innerHTML = `<span class="drawer-assignee"><span class="drawer-assignee-icon">${initial}</span>${name}</span>`;
+            } else {
+                assigneeEl.innerHTML = '<span class="drawer-empty">Unassigned</span>';
+            }
+
+            // Open drawer
+            document.getElementById('drawer-overlay').classList.add('open');
+        }
+
+        function closeTaskDrawer() {
+            document.getElementById('drawer-overlay').classList.remove('open');
+        }
+
+        // Close drawer on Escape key
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                closeTaskDrawer();
+            }
+        });
     </script>
 </body>
 </html>
