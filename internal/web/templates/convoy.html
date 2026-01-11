@@ -292,6 +292,12 @@
             transform: rotate(45deg);
         }
 
+        /* Disable transitions during HTMX refresh state restoration */
+        .no-transition,
+        .no-transition * {
+            transition: none !important;
+        }
+
         .convoy-details {
             background: var(--bg-dark);
         }
@@ -926,6 +932,11 @@
         }
 
         function restoreExpandedState() {
+            const dashboard = document.querySelector('.dashboard');
+            if (dashboard) {
+                dashboard.classList.add('no-transition');
+            }
+
             getExpandedSet().forEach(convoyId => {
                 const group = document.querySelector(`[data-convoy-id="${convoyId}"]`);
                 const details = document.getElementById(`details-${convoyId}`);
@@ -936,6 +947,12 @@
                     icon.textContent = '-';
                 }
             });
+
+            // Force reflow then re-enable transitions
+            if (dashboard) {
+                void dashboard.offsetHeight;
+                dashboard.classList.remove('no-transition');
+            }
         }
 
         document.addEventListener('DOMContentLoaded', restoreExpandedState);
