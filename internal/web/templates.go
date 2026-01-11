@@ -60,6 +60,17 @@ type TrackedIssue struct {
 	Assignee string
 }
 
+// issuesByStatus filters tracked issues by status for kanban columns.
+func issuesByStatus(issues []TrackedIssue, status string) []TrackedIssue {
+	var result []TrackedIssue
+	for _, issue := range issues {
+		if issue.Status == status {
+			result = append(result, issue)
+		}
+	}
+	return result
+}
+
 // LoadTemplates loads and parses all HTML templates.
 func LoadTemplates() (*template.Template, error) {
 	// Define template functions
@@ -68,6 +79,7 @@ func LoadTemplates() (*template.Template, error) {
 		"statusClass":     statusClass,
 		"workStatusClass": workStatusClass,
 		"progressPercent": progressPercent,
+		"issuesByStatus":  issuesByStatus,
 	}
 
 	// Get the templates subdirectory
