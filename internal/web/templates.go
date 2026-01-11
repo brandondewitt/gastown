@@ -54,10 +54,15 @@ type ConvoyRow struct {
 
 // TrackedIssue represents an issue tracked by a convoy.
 type TrackedIssue struct {
-	ID       string
-	Title    string
-	Status   string
-	Assignee string
+	ID          string
+	Title       string
+	Status      string
+	Assignee    string
+	Description string
+	Priority    int
+	Type        string
+	CreatedAt   string
+	UpdatedAt   string
 }
 
 // issuesByStatus filters tracked issues by status for kanban columns.
@@ -147,15 +152,4 @@ func progressPercent(completed, total int) int {
 		return 0
 	}
 	return (completed * 100) / total
-}
-
-// issuesByStatus filters tracked issues by status for kanban columns.
-func issuesByStatus(issues []TrackedIssue, status string) []TrackedIssue {
-	var result []TrackedIssue
-	for _, issue := range issues {
-		if issue.Status == status {
-			result = append(result, issue)
-		}
-	}
-	return result
 }
