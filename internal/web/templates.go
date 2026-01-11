@@ -54,10 +54,15 @@ type ConvoyRow struct {
 
 // TrackedIssue represents an issue tracked by a convoy.
 type TrackedIssue struct {
-	ID       string
-	Title    string
-	Status   string
-	Assignee string
+	ID          string
+	Title       string
+	Status      string
+	Assignee    string
+	Description string
+	Priority    int
+	Type        string
+	CreatedAt   string
+	UpdatedAt   string
 }
 
 // issuesByStatus filters tracked issues by status for kanban columns.

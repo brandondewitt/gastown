@@ -127,10 +127,15 @@ func (f *LiveConvoyFetcher) FetchConvoys() ([]ConvoyRow, error) {
 		row.TrackedIssues = make([]TrackedIssue, len(tracked))
 		for i, t := range tracked {
 			row.TrackedIssues[i] = TrackedIssue{
-				ID:       t.ID,
-				Title:    t.Title,
-				Status:   t.Status,
-				Assignee: t.Assignee,
+				ID:          t.ID,
+				Title:       t.Title,
+				Status:      t.Status,
+				Assignee:    t.Assignee,
+				Description: t.Description,
+				Priority:    t.Priority,
+				Type:        t.Type,
+				CreatedAt:   t.CreatedAt,
+				UpdatedAt:   t.UpdatedAt.Format("2006-01-02 15:04"),
 			}
 		}
 
@@ -146,6 +151,10 @@ type trackedIssueInfo struct {
 	Title        string
 	Status       string
 	Assignee     string
+	Description  string
+	Priority     int
+	Type         string
+	CreatedAt    string
 	LastActivity time.Time
 	UpdatedAt    time.Time // Fallback for activity when no assignee
 }
@@ -202,6 +211,10 @@ func (f *LiveConvoyFetcher) getTrackedIssues(convoyID string) []trackedIssueInfo
 			info.Title = d.Title
 			info.Status = d.Status
 			info.Assignee = d.Assignee
+			info.Description = d.Description
+			info.Priority = d.Priority
+			info.Type = d.Type
+			info.CreatedAt = d.CreatedAt
 			info.UpdatedAt = d.UpdatedAt
 		} else {
 			info.Title = "(external)"
@@ -220,11 +233,15 @@ func (f *LiveConvoyFetcher) getTrackedIssues(convoyID string) []trackedIssueInfo
 
 // issueDetail holds basic issue info.
 type issueDetail struct {
-	ID        string
-	Title     string
-	Status    string
-	Assignee  string
-	UpdatedAt time.Time
+	ID          string
+	Title       string
+	Status      string
+	Assignee    string
+	Description string
+	Priority    int
+	Type        string
+	CreatedAt   string
+	UpdatedAt   time.Time
 }
 
 // getIssueDetailsBatch fetches details for multiple issues.
@@ -247,11 +264,15 @@ func (f *LiveConvoyFetcher) getIssueDetailsBatch(issueIDs []string) map[string]*
 	}
 
 	var issues []struct {
-		ID        string `json:"id"`
-		Title     string `json:"title"`
-		Status    string `json:"status"`
-		Assignee  string `json:"assignee"`
-		UpdatedAt string `json:"updated_at"`
+		ID          string `json:"id"`
+		Title       string `json:"title"`
+		Status      string `json:"status"`
+		Assignee    string `json:"assignee"`
+		Description string `json:"description"`
+		Priority    int    `json:"priority"`
+		Type        string `json:"issue_type"`
+		CreatedAt   string `json:"created_at"`
+		UpdatedAt   string `json:"updated_at"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &issues); err != nil {
 		return result
@@ -259,10 +280,14 @@ func (f *LiveConvoyFetcher) getIssueDetailsBatch(issueIDs []string) map[string]*
 
 	for _, issue := range issues {
 		detail := &issueDetail{
-			ID:       issue.ID,
-			Title:    issue.Title,
-			Status:   issue.Status,
-			Assignee: issue.Assignee,
+			ID:          issue.ID,
+			Title:       issue.Title,
+			Status:      issue.Status,
+			Assignee:    issue.Assignee,
+			Description: issue.Description,
+			Priority:    issue.Priority,
+			Type:        issue.Type,
+			CreatedAt:   issue.CreatedAt,
 		}
 		// Parse updated_at timestamp
 		if issue.UpdatedAt != "" {
