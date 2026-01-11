@@ -753,3 +753,106 @@ func parseActivityTimestamp(s string) (int64, bool) {
 	}
 	return unix, true
 }
+
+// FetchTaskQueue fetches standalone tasks (open issues not tracked by any convoy).
+func (f *LiveConvoyFetcher) FetchTaskQueue() ([]TaskRow, error) {
+	// List all open issues (excluding convoys, agents, merge-requests)
+	listArgs := []string{"list", "--status=open", "--json"}
+	listCmd := exec.Command("bd", listArgs...)
+	listCmd.Dir = f.townBeads
+
+	var stdout bytes.Buffer
+	listCmd.Stdout = &stdout
+
+	if err := listCmd.Run(); err != nil {
+		return nil, fmt.Errorf("listing issues: %w", err)
+	}
+
+	var issues []struct {
+		ID       string `json:"id"`
+		Title    string `json:"title"`
+		Status   string `json:"status"`
+		Priority int    `json:"priority"`
+		Type     string `json:"issue_type"`
+		Assignee string `json:"assignee"`
+		Labels   string `json:"labels"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &issues); err != nil {
+		return nil, fmt.Errorf("parsing issue list: %w", err)
+	}
+
+	// Get set of tracked issue IDs (to exclude from task queue)
+	trackedIDs := f.getTrackedIssueIDs()
+
+	// Filter to standalone tasks
+	var tasks []TaskRow
+	for _, issue := range issues {
+		// Skip convoys, agents, merge-requests, and tracked issues
+		if issue.Type == "convoy" || issue.Type == "agent" || issue.Type == "merge-request" {
+			continue
+		}
+		if strings.Contains(issue.Labels, "gt:agent") || strings.Contains(issue.Labels, "gt:merge-request") {
+			continue
+		}
+		if trackedIDs[issue.ID] {
+			continue
+		}
+
+		// Determine color class based on priority
+		colorClass := ""
+		switch issue.Priority {
+		case 0, 1:
+			colorClass = "task-high"
+		case 2:
+			colorClass = "task-medium"
+		}
+
+		tasks = append(tasks, TaskRow{
+			ID:         issue.ID,
+			Title:      issue.Title,
+			Status:     issue.Status,
+			Priority:   issue.Priority,
+			Assignee:   issue.Assignee,
+			ColorClass: colorClass,
+		})
+	}
+
+	return tasks, nil
+}
+
+// getTrackedIssueIDs returns a set of issue IDs that are tracked by convoys.
+func (f *LiveConvoyFetcher) getTrackedIssueIDs() map[string]bool {
+	result := make(map[string]bool)
+	dbPath := filepath.Join(f.townBeads, "beads.db")
+
+	// Query all tracked dependencies
+	queryCmd := exec.Command("sqlite3", "-json", dbPath,
+		`SELECT depends_on_id FROM dependencies WHERE type = 'tracks'`)
+
+	var stdout bytes.Buffer
+	queryCmd.Stdout = &stdout
+	if err := queryCmd.Run(); err != nil {
+		return result
+	}
+
+	var deps []struct {
+		DependsOnID string `json:"depends_on_id"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &deps); err != nil {
+		return result
+	}
+
+	for _, dep := range deps {
+		issueID := dep.DependsOnID
+		// Normalize external refs
+		if strings.HasPrefix(issueID, "external:") {
+			parts := strings.SplitN(issueID, ":", 3)
+			if len(parts) == 3 {
+				issueID = parts[2]
+			}
+		}
+		result[issueID] = true
+	}
+
+	return result
+}

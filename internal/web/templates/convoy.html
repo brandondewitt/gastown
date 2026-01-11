@@ -413,6 +413,48 @@
             padding: 16px 8px;
             font-style: italic;
         }
+
+        /* Task queue styles */
+        .task-high {
+            background: rgba(248, 113, 113, 0.1);
+        }
+
+        .task-medium {
+            background: rgba(250, 204, 21, 0.05);
+        }
+
+        .priority-badge {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            margin-right: 8px;
+        }
+
+        .priority-critical, .priority-high {
+            background: var(--red);
+            color: var(--bg-dark);
+        }
+
+        .priority-medium {
+            background: var(--yellow);
+            color: var(--bg-dark);
+        }
+
+        .priority-low, .priority-minimal {
+            background: var(--text-secondary);
+            color: var(--bg-dark);
+        }
+
+        .task-title {
+            color: var(--text-primary);
+        }
+
+        .task-assignee {
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+        }
     </style>
 </head>
 <body>
@@ -576,6 +618,35 @@
         <div class="empty-state-inline">
             <p>No PRs in queue</p>
         </div>
+        {{end}}
+
+        {{if .TaskQueue}}
+        <h2 class="section-header">📋 Task Queue</h2>
+        <table class="convoy-table">
+            <thead>
+                <tr>
+                    <th>Priority</th>
+                    <th>Task</th>
+                    <th>Assignee</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{range .TaskQueue}}
+                <tr class="{{.ColorClass}}">
+                    <td>
+                        <span class="priority-badge {{priorityClass .Priority}}">{{priorityLabel .Priority}}</span>
+                    </td>
+                    <td>
+                        <span class="convoy-id">{{.ID}}</span>
+                        <span class="task-title">{{.Title}}</span>
+                    </td>
+                    <td class="task-assignee">
+                        {{if .Assignee}}{{.Assignee}}{{else}}<em>Unassigned</em>{{end}}
+                    </td>
+                </tr>
+                {{end}}
+            </tbody>
+        </table>
         {{end}}
 
         {{if .Polecats}}
