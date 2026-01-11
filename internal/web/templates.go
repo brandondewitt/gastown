@@ -17,6 +17,17 @@ type ConvoyData struct {
 	Convoys    []ConvoyRow
 	MergeQueue []MergeQueueRow
 	Polecats   []PolecatRow
+	TaskQueue  []TaskRow
+}
+
+// TaskRow represents a standalone task in the task queue.
+type TaskRow struct {
+	ID         string
+	Title      string
+	Status     string        // "open", "in_progress", "closed"
+	Priority   int           // 0-4
+	Assignee   string
+	ColorClass string        // Row highlight color
 }
 
 // PolecatRow represents a polecat worker in the dashboard.
@@ -83,6 +94,8 @@ func LoadTemplates() (*template.Template, error) {
 		"activityClass":   activityClass,
 		"statusClass":     statusClass,
 		"workStatusClass": workStatusClass,
+		"priorityClass":   priorityClass,
+		"priorityLabel":   priorityLabel,
 		"progressPercent": progressPercent,
 		"issuesByStatus":  issuesByStatus,
 	}
@@ -144,6 +157,31 @@ func workStatusClass(workStatus string) string {
 	default:
 		return "work-unknown"
 	}
+}
+
+// priorityClass returns the CSS class for a priority level.
+func priorityClass(priority int) string {
+	switch priority {
+	case 0:
+		return "priority-critical"
+	case 1:
+		return "priority-high"
+	case 2:
+		return "priority-medium"
+	case 3:
+		return "priority-low"
+	default:
+		return "priority-minimal"
+	}
+}
+
+// priorityLabel returns the display label for a priority level.
+func priorityLabel(priority int) string {
+	labels := []string{"P0", "P1", "P2", "P3", "P4"}
+	if priority >= 0 && priority < len(labels) {
+		return labels[priority]
+	}
+	return "P?"
 }
 
 // progressPercent calculates percentage as an integer for progress bars.
