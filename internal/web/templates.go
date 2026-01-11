@@ -148,3 +148,14 @@ func progressPercent(completed, total int) int {
 	}
 	return (completed * 100) / total
 }
+
+// issuesByStatus filters tracked issues by status for kanban columns.
+func issuesByStatus(issues []TrackedIssue, status string) []TrackedIssue {
+	var result []TrackedIssue
+	for _, issue := range issues {
+		if issue.Status == status {
+			result = append(result, issue)
+		}
+	}
+	return result
+}
